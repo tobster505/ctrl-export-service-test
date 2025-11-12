@@ -176,45 +176,85 @@ function radarScaleFromCounts(counts) {
   return { min, max, ticks: { stepSize: 1 }, grid: { circular: true } };
 }
 
-function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
-  const data = [N(counts.C,0), N(counts.T,0), N(counts.R,0), N(counts.L,0)];
-  const rScale = radarScaleFromCounts(counts);
+function buildSpiderQuickChartUrlFromCounts(counts, themeOverride = null) {
+  const data = [
+    N(counts.C, 0),
+    N(counts.T, 0),
+    N(counts.R, 0),
+    N(counts.L, 0),
+  ];
+
+  // Uses your existing “1 below / 1 above” rule
+  const rScale     = radarScaleFromCounts(counts);
   const isFiveOnly = !!rScale._fiveOnly;
+
   const C = { ...RADAR_THEME, ...(themeOverride || {}) };
 
   const cfg = {
     type: "radar",
     data: {
-      labels: ["Concealed","Triggered","Regulated","Lead"],
-      datasets: [{
-        label: "CTRL",
-        data,
-        fill: true,
-        borderColor: C.stroke,
-        backgroundColor: C.fill,
-        pointBackgroundColor: C.point,
-        pointBorderColor: "#FFFFFF",
-        borderWidth: isFiveOnly ? 5 : 4,
-        pointRadius: isFiveOnly ? 6 : 4,
-        pointBorderWidth: 2,
-        pointHoverRadius: isFiveOnly ? 8 : 5
-      }]
+      // Short, clean axis labels – full words can be explained in text
+      labels: ["C", "T", "R", "L"],
+      datasets: [
+        {
+          label: "CTRL",
+          data,
+          fill: true,
+
+          backgroundColor: C.fill,        // e.g. rgba(75,46,131,0.35)
+          borderColor: C.stroke,          // e.g. #4B2E83
+          pointBackgroundColor: C.point,
+          pointBorderColor: "#FFFFFF",
+
+          borderWidth: isFiveOnly ? 5 : 4,
+          pointRadius: isFiveOnly ? 6 : 4,
+          pointBorderWidth: 2,
+          pointHoverRadius: isFiveOnly ? 8 : 5,
+        },
+      ],
     },
     options: {
       responsive: true,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+        title:   { display: false },
+      },
       scales: {
         r: {
           min: rScale.min,
           max: rScale.max,
-          ticks: { ...rScale.ticks, color: C.labels, font: { size: 12} },
-          grid:  { ...rScale.grid, color: C.grid, lineWidth: 2, circular: true },
-          angleLines: { display: true, color: C.grid, lineWidth: 2 },
-          pointLabels: { font: { size: 18, weight: "700" }, color: C.labels }
-        }
+          ticks: {
+            ...rScale.ticks,
+            color: C.labels,
+            font: { size: 11 },
+            showLabelBackdrop: false,
+            backdropColor: "transparent",
+          },
+          grid: {
+            ...rScale.grid,
+            color: C.grid,
+            lineWidth: 1.8,
+            circular: true,
+          },
+          angleLines: {
+            display: true,
+            color: C.grid,
+            lineWidth: 1.4,
+          },
+          pointLabels: {
+            font: { size: 22, weight: "800" },  // big bold C / T / R / L
+            color: C.labels,
+            padding: 8,
+          },
+        },
       },
-      elements: { line: { tension: 0.60, borderWidth: isFiveOnly ? 5 : 4 } }
-    }
+      elements: {
+        line: {
+          tension: 0.35,
+        },
+      },
+    },
   };
 
   const u = new URL("https://quickchart.io/chart");
@@ -222,7 +262,7 @@ function buildSpiderQuickChartUrlFromCounts(counts, themeOverride=null) {
   u.searchParams.set("backgroundColor", "transparent");
   u.searchParams.set("width", "700");
   u.searchParams.set("height", "700");
-  u.searchParams.set("v", Date.now().toString(36));
+  u.searchParams.set("v", Date.now().toString(36));   // cache-buster
   return u.toString();
 }
 
