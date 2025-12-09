@@ -558,7 +558,7 @@ export default async function handler(req, res) {
       const raw = P.raw || {};
       const ctrl = raw.ctrl || {};
 
-      // 1) find dominant + second states
+      // 1) Find dominant + second states
       const domKey = resolveDomKey(
         P["p3:dom"] || P.dom || ctrl.dominantState,
         P.domChar,
@@ -577,13 +577,13 @@ export default async function handler(req, res) {
         const counts = P.counts || ctrl.counts || {};
         const keys = ["C", "T", "R", "L"];
         const ranked = keys
-          .map((k) => ({ k, n: Number(counts[k] || 0) || 0 }))
+          .map(k => ({ k, n: Number(counts[k] || 0) || 0 }))
           .sort((a, b) => b.n - a.n);
-        const bestNonDom = ranked.find((r) => r.k !== domKey && r.n > 0);
+        const bestNonDom = ranked.find(r => r.k !== domKey && r.n > 0);
         if (bestNonDom) secondKey = bestNonDom.k;
       }
 
-      // 2) draw subtle raise for 2nd strongest state (no label, lighter fill)
+      // 2) Draw subtle raise for 2nd strongest state (no label, lighter fill)
       if (
         secondKey &&
         secondKey !== domKey &&
@@ -592,33 +592,43 @@ export default async function handler(req, res) {
       ) {
         const cfgSecond = {
           ...stateCfg,
-          fillOpacity: 0.2,
-          strokeOpacity: 0.7,
+          fillOpacity: 0.20,
+          strokeOpacity: 0.60
         };
         paintStateHighlight(p3, secondKey, cfgSecond);
       }
 
-      // 3) draw strong highlight for dominant state + YOU ARE HERE 👑 label
+      // 3) Draw strong highlight for dominant state
+      let crownAnchor = null;
       if (domKey && stateCfg.useAbsolute) {
-        const anchor = paintStateHighlight(p3, domKey, stateCfg);
-        if (anchor && stateCfg.labelText) {
-          const labelText = stateCfg.labelText || "YOU ARE HERE";
-          drawTextBox(
-            p3,
-            font,
-           labelText,
-           {
-             x: anchor.labelX,
-             y: anchor.labelY,
-             w: 180,
-            size: stateCfg.labelSize || 10,
-            align: "center",
-          },
-          { maxLines: 1 }
-        );
-
-        }
+        const cfgDom = {
+          ...stateCfg,
+          fillOpacity: 0.45,
+          strokeOpacity: 0.90
+        };
+        crownAnchor = paintStateHighlight(p3, domKey, cfgDom);
       }
+
+      // 4) Crown bar above dominant state (no text, no emoji)
+      if (crownAnchor) {
+        const cw = stateCfg.crownWidth  || 60;
+        const ch = stateCfg.crownHeight || 12;
+        const offsetY = stateCfg.crownOffsetY || 4;
+
+        const x = crownAnchor.labelX - cw / 2;
+        const y = crownAnchor.labelY + offsetY;
+
+        p3.drawRectangle({
+          x,
+          y,
+          width: cw,
+          height: ch,
+          color: rgb(0.95, 0.85, 0.40),
+          borderColor: rgb(0.80, 0.70, 0.25),
+          borderWidth: 1
+        });
+      }
+
 
       // 4) Exec summary + TLDR + tip
       const exec = norm(P["p3:exec"]);
