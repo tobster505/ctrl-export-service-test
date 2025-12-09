@@ -182,40 +182,51 @@ function resolveDomKey(dom, domChar, domDesc) {
   return "R";
 }
 
+/* ───────────── robust data parser ───────────── */
+
 function parseDataParam(raw) {
   if (!raw) return {};
-  let enc = String(raw);
 
-  // Step 1: URL-decode once
-  let decoded = enc;
+  // 1) Try direct JSON (Vercel often gives decoded query)
   try {
-    decoded = decodeURIComponent(enc);
+    return JSON.parse(String(raw));
   } catch {
-    // ignore if not URI-encoded
+    // ignore
   }
 
-  // Step 2: try base64-encoded JSON (old behaviour)
-  let b64 = decoded.replace(/-/g, "+").replace(/_/g, "/");
-  while (b64.length % 4) b64 += "=";
-
+  // 2) Try JSON after decodeURIComponent
   try {
+    const decoded = decodeURIComponent(String(raw));
+    return JSON.parse(decoded);
+  } catch {
+    // ignore
+  }
+
+  // 3) Try base64-encoded JSON (legacy behaviour)
+  try {
+    let b64 = String(raw).replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
     const txt = Buffer.from(b64, "base64").toString("utf8");
     return JSON.parse(txt);
   } catch {
-    // Step 3: assume plain JSON
-    try {
-      return JSON.parse(decoded);
-    } catch {
-      return {};
-    }
+    // ignore
   }
+
+  return {};
 }
 
 /* GET/POST payload reader */
 async function readPayload(req) {
-  const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
+  if (req.method === "POST") {
+    const body = req.body || {};
+    if (body.data) return parseDataParam(body.data);
+    if (typeof body === "object" && !Array.isArray(body)) return body;
+    return {};
+  }
+
+  // GET
+  const q = req.query || {};
   if (q.data) return parseDataParam(q.data);
-  if (req.method === "POST" && typeof req.body === "object") return req.body;
   return {};
 }
 
@@ -346,6 +357,8 @@ function normaliseInput(d = {}) {
 
   return out;
 }
+
+/* ───────────── template + asset loaders ───────────── */
 
 async function loadTemplateBytesLocal(fname) {
   if (!fname.endsWith(".pdf"))
