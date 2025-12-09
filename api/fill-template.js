@@ -795,8 +795,23 @@ export default async function handler(req, res) {
 
     // output
     const bytes = await pdfDoc.save();
+
+    // --- Build dynamic filename: PoC_Profile_FullName_Date.pdf ---
+    const safe = (value, fallback = "") =>
+      String(value || fallback)
+        .trim()
+        .replace(/[^A-Za-z0-9]+/g, "_")   // non-alphanumerics → _
+        .replace(/^_+|_+$/g, "");         // trim leading/trailing _
+
+    const namePart = safe(P.name || P.fullName || "Profile");
+    const datePart = safe(P.dateLbl || P.dateLabel || P.date || "");
+
+    const fileName = datePart
+      ? `PoC_Profile_${namePart}_${datePart}.pdf`
+      : `PoC_Profile_${namePart}.pdf`;
+
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", 'inline; filename="ctrl-poc-profile.pdf"');
+    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
     res.send(Buffer.from(bytes));
   } catch (err) {
     console.error("PDF handler error:", err);
@@ -804,4 +819,5 @@ export default async function handler(req, res) {
       .status(500)
       .json({ error: "Failed to generate PDF", detail: err?.message || String(err) });
   }
+
 }
