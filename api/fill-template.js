@@ -202,21 +202,35 @@ function resolveDomKey(dom, domChar, domDesc) {
   return "R";
 }
 
-/* parse ?data=… param (base64/json) */
-function parseDataParam(b64ish) {
-  if (!b64ish) return {};
-  let s = String(b64ish);
+function parseDataParam(raw) {
+  if (!raw) return {};
+  let enc = String(raw);
+
+  // Step 1: URL-decode once
+  let decoded = enc;
   try {
-    s = decodeURIComponent(s);
-  } catch {}
-  s = s.replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  try {
-    return JSON.parse(Buffer.from(s, "base64").toString("utf8"));
+    decoded = decodeURIComponent(enc);
   } catch {
-    return {};
+    // if it was not actually URI-encoded, ignore
+  }
+
+  // Step 2: first attempt: assume base64-encoded JSON (old behaviour)
+  let b64 = decoded.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+
+  try {
+    const txt = Buffer.from(b64, "base64").toString("utf8");
+    return JSON.parse(txt);
+  } catch {
+    // Step 3: fallback: assume decoded is plain JSON
+    try {
+      return JSON.parse(decoded);
+    } catch {
+      return {};
+    }
   }
 }
+
 
 /* GET/POST payload reader */
 async function readPayload(req) {
@@ -405,8 +419,9 @@ export default async function handler(req, res) {
   try {
     const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
     // Default to PoC template; still allow ?tpl= override from your URL
-    const defaultTpl = "CTRL_Perspective_Assessment_Profile_template_PoC.pdf";
+    const defaultTpl = "CTRL_PoC_Assessment_Profile_template.pdf";
     const tpl = S(q.tpl || defaultTpl).replace(/[^A-Za-z0-9._-]/g, "");
+
 
     const src = await readPayload(req);
     const P = normaliseInput(src);
