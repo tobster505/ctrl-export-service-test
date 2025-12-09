@@ -189,36 +189,36 @@ function paintStateHighlight(page3, dom, cfg = {}) {
 function drawShadowL(page, absBox, strength = 1) {
   if (!page || !absBox) return;
 
-  const pageH = page.getHeight();
-  const x = N(absBox.x);
-  const yTop = N(absBox.y);
-  const w = N(absBox.w);
-  const h = N(absBox.h);
+  // Convert TL box to BL coords once
+  const rect = rectTLtoBL(page, absBox, 0);
+  const x = rect.x;
+  const y = rect.y;
+  const w = rect.w;
+  const h = rect.h;
 
-  const yBottom = pageH - (yTop + h);
-
-  // tweak these if you want thicker/thinner shadows
-  const sideWidth = 18 * strength;
-  const baseHeight = 18 * strength;
+  // Tune these two numbers to match your Keynote shadow thickness
+  const sideWidth  = 18 * strength;   // right-hand bar
+  const baseHeight = 18 * strength;   // bottom bar
 
   // bottom bar
   page.drawRectangle({
     x,
-    y: yBottom,
+    y,
     width: w,
     height: baseHeight,
     color: rgb(BRAND.r, BRAND.g, BRAND.b),
   });
 
-  // right-hand bar
+  // right-hand bar (goes up the full card height and sits on the base)
   page.drawRectangle({
     x: x + w - sideWidth,
-    y: yBottom,
+    y,
     width: sideWidth,
-    height: h,
+    height: h + baseHeight,
     color: rgb(BRAND.r, BRAND.g, BRAND.b),
   });
 }
+
 
 function resolveDomKey(dom, domChar, domDesc) {
   const d = S(dom || "").trim().charAt(0).toUpperCase();
@@ -671,29 +671,28 @@ export default async function handler(req, res) {
 
       // 3) dominant state shadow (full)
       if (domKey && absBoxes[domKey]) {
-        drawShadowL(p3, absBoxes[domKey], 1.0);
+        drawShadowL(p3, absBoxes[domKey], 1.2);
       }
 
       // 4) crown image above dominant state
       if (crownImg && domKey && absBoxes[domKey]) {
-        const b = absBoxes[domKey];
-        const pageH = p3.getHeight();
-        const crownW = stateCfg.crownWidth || 40;
-        const crownH = stateCfg.crownHeight || 20;
-        const gap = stateCfg.crownOffsetY || 4;
+        const card = rectTLtoBL(p3, absBoxes[domKey], 0);
 
-        const x = b.x + b.w / 2 - crownW / 2;
-        const yTopTL = b.y;
-        const yTopBL = pageH - yTopTL;
-        const y = yTopBL + gap;
+        const crownW = stateCfg.crownWidth  || 40;
+        const crownH = stateCfg.crownHeight || 20;
+        const gap    = stateCfg.crownOffsetY || 6;  // space between card top and crown
+
+        const cx = card.x + card.w / 2 - crownW / 2;
+        const cy = card.y + card.h + gap;
 
         p3.drawImage(crownImg, {
-          x,
-          y,
+          x: cx,
+          y: cy,
           width: crownW,
           height: crownH,
         });
       }
+
 
       // 5) Exec summary + TLDR + tip
       const exec = norm(P["p3:exec"]);
