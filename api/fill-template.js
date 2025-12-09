@@ -624,11 +624,12 @@ export default async function handler(req, res) {
     };
 
     /* p1 — cover */
-    if (p1 && P.name) drawTextBox(p1, font, P.name, L.p1.name);
+    
     const dateText = norm(P.dateLbl || P.dateLabel || P["p1:d"] || "");
     if (p1 && dateText) {
       drawTextBox(p1, font, dateText, L.p1.date);
     }
+
 
     /* p3 — dominant / second state shadows + Exec / TLDR / tip */
     (function drawPage3() {
