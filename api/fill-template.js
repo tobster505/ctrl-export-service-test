@@ -37,15 +37,6 @@ const cleanBullet = (s) =>
 /* brand colour for CTRL magenta (#A64E8C) */
 const BRAND = { r: 166 / 255, g: 78 / 255, b: 140 / 255 };
 
-/* safe JSON parse (kept if needed later) */
-function safeJsonParse(str, fb = {}) {
-  try {
-    return JSON.parse(str);
-  } catch {
-    return fb;
-  }
-}
-
 /* embed remote image (QuickChart etc.) */
 async function embedRemoteImage(pdfDoc, url) {
   if (!url) return null;
@@ -136,7 +127,7 @@ function drawTextBox(page, font, text, box, opts = {}) {
   });
 }
 
-/* convert TL coords to BL rect (kept for future use) */
+/* convert TL coords to BL rect */
 const rectTLtoBL = (page, box, inset = 0) => {
   const pageH = page.getHeight();
   const x = N(box.x) + inset;
@@ -145,45 +136,6 @@ const rectTLtoBL = (page, box, inset = 0) => {
   const y = pageH - N(box.y) - N(box.h) + inset;
   return { x, y, w, h };
 };
-
-/* rounded rectangle highlight (not used for cards now, but kept if needed) */
-function paintStateHighlight(page3, dom, cfg = {}) {
-  if (!page3) return null;
-  const b = (cfg.absBoxes && cfg.absBoxes[dom]) || null;
-  if (!b) return null;
-
-  const pageH = page3.getHeight();
-  const inset =
-    (cfg.styleByState && cfg.styleByState[dom]?.inset) ??
-    cfg.highlightInset ??
-    4;
-  const x = N(b.x) + inset;
-  const yTop = N(b.y) + inset;
-  const w = Math.max(0, N(b.w) - inset * 2);
-  const h = Math.max(0, N(b.h) - inset * 2);
-  const y = pageH - yTop - h;
-
-  const fillOpacity = clamp(N(cfg.fillOpacity, 0.25), 0, 1);
-  const strokeOpacity = clamp(N(cfg.strokeOpacity, 0.9), 0, 1);
-  const fillColor = cfg.fillColor || BRAND;
-  const strokeColor = cfg.strokeColor || BRAND;
-
-  page3.drawRectangle({
-    x,
-    y,
-    width: w,
-    height: h,
-    borderColor: rgb(strokeColor.r, strokeColor.g, strokeColor.b),
-    borderWidth: 1.2,
-    color: rgb(fillColor.r, fillColor.g, fillColor.b),
-    opacity: fillOpacity,
-    borderOpacity: strokeOpacity,
-  });
-
-  const labelX = x + w / 2 + (cfg.labelOffsetX || 0);
-  const labelY = y + h + (cfg.labelOffsetY || 12);
-  return { labelX, labelY };
-}
 
 /* L-shaped magenta “shadow” under a card */
 function drawShadowL(page, absBox, strength = 1) {
@@ -196,7 +148,7 @@ function drawShadowL(page, absBox, strength = 1) {
   const w = rect.w;
   const h = rect.h;
 
-  // Tune these two numbers to match your Keynote shadow thickness
+  // Tune these numbers to match your template shadow thickness
   const sideWidth  = 18 * strength;   // right-hand bar
   const baseHeight = 18 * strength;   // bottom bar
 
@@ -218,7 +170,6 @@ function drawShadowL(page, absBox, strength = 1) {
     color: rgb(BRAND.r, BRAND.g, BRAND.b),
   });
 }
-
 
 function resolveDomKey(dom, domChar, domDesc) {
   const d = S(dom || "").trim().charAt(0).toUpperCase();
@@ -395,7 +346,7 @@ async function loadTemplateBytesLocal(fname) {
   );
 }
 
-/* generic asset loader (for crown.png etc.) */
+/* generic asset loader (kept for future assets if needed) */
 async function loadAssetBytes(fname) {
   const __file = fileURLToPath(import.meta.url);
   const __dir = path.dirname(__file);
@@ -438,18 +389,6 @@ export default async function handler(req, res) {
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    // crown image (optional)
-    let crownImg = null;
-    try {
-      const crownBytes = await loadAssetBytes("crown.png");
-      crownImg = await pdfDoc.embedPng(crownBytes);
-    } catch (e) {
-      console.warn(
-        "Crown image not found or failed to embed:",
-        e?.message || String(e)
-      );
-    }
-
     const pages = pdfDoc.getPages();
     const p1 = pageOrNull(pages, 0);
     const p2 = pageOrNull(pages, 1);
@@ -489,25 +428,14 @@ export default async function handler(req, res) {
         },
         state: {
           useAbsolute: true,
-          shape: "round",
-          highlightInset: 6,
-          highlightRadius: 28,
-          fillOpacity: 0.45,
-          styleByState: {
-            C: { radius: 28, inset: 6 },
-            T: { radius: 28, inset: 6 },
-            R: { radius: 28, inset: 6 },
-            L: { radius: 28, inset: 6 },
-          },
           absBoxes: {
             C: { x: 58, y: 258, w: 188, h: 156 },
             T: { x: 299, y: 258, w: 196, h: 156 },
             R: { x: 60, y: 433, w: 188, h: 158 },
             L: { x: 298, y: 430, w: 195, h: 173 },
           },
-          crownWidth: 40,
-          crownHeight: 20,
-          crownOffsetY: 4,
+          labelSize: 12,
+          labelOffsetTop: 18,
         },
       },
       p4: {
@@ -623,15 +551,21 @@ export default async function handler(req, res) {
       },
     };
 
-    /* p1 — cover */
-    
-    const dateText = norm(P.dateLbl || P.dateLabel || P["p1:d"] || "");
-    if (p1 && dateText) {
-      drawTextBox(p1, font, dateText, L.p1.date);
+    /* p1 — cover (name + date) */
+    if (p1 && L.p1) {
+      const nameText =
+        norm(P.name || (P.person && P.person.fullName) || P["p1:n"] || "");
+      const dateText = norm(P.dateLbl || P.dateLabel || P["p1:d"] || "");
+
+      if (nameText) {
+        drawTextBox(p1, font, nameText, L.p1.name, { maxLines: 1 });
+      }
+      if (dateText) {
+        drawTextBox(p1, font, dateText, L.p1.date, { maxLines: 1 });
+      }
     }
 
-
-    /* p3 — dominant / second state shadows + Exec / TLDR / tip */
+    /* p3 — dominant / second state shadows + "YOU ARE HERE!" + Exec / TLDR / tip */
     (function drawPage3() {
       if (!p3 || !L.p3) return;
 
@@ -670,30 +604,23 @@ export default async function handler(req, res) {
         drawShadowL(p3, absBoxes[secondKey], 0.7);
       }
 
-      // 3) dominant state shadow (full)
+      // 3) dominant state shadow (full / thicker)
       if (domKey && absBoxes[domKey]) {
         drawShadowL(p3, absBoxes[domKey], 1.2);
       }
 
-      // 4) crown image above dominant state
-      if (crownImg && domKey && absBoxes[domKey]) {
-        const card = rectTLtoBL(p3, absBoxes[domKey], 0);
-
-        const crownW = stateCfg.crownWidth  || 40;
-        const crownH = stateCfg.crownHeight || 20;
-        const gap    = stateCfg.crownOffsetY || 6;  // space between card top and crown
-
-        const cx = card.x + card.w / 2 - crownW / 2;
-        const cy = card.y + card.h + gap;
-
-        p3.drawImage(crownImg, {
-          x: cx,
-          y: cy,
-          width: crownW,
-          height: crownH,
-        });
+      // 4) "YOU ARE HERE!" label above dominant card
+      if (domKey && absBoxes[domKey]) {
+        const b = absBoxes[domKey];
+        const labelBox = {
+          x: b.x,
+          y: b.y - (stateCfg.labelOffsetTop || 18),
+          w: b.w,
+          size: stateCfg.labelSize || 12,
+          align: "center",
+        };
+        drawTextBox(p3, font, "YOU ARE HERE!", labelBox, { maxLines: 1 });
       }
-
 
       // 5) Exec summary + TLDR + tip
       const exec = norm(P["p3:exec"]);
@@ -719,23 +646,17 @@ export default async function handler(req, res) {
       }
     })();
 
-    /* p4 — state / sub-state deep dive */
-    if (p4 && L.p4?.spider && P["p4:stateDeep"]) {
-      drawTextBox(p4, font, norm(P["p4:stateDeep"]), L.p4.spider, {
-        maxLines: L.p4.spider.maxLines,
-      });
-    }
-
-    /* p5 — frequency narrative + spider chart */
-    if (p5) {
-      if (L.p5?.seqpat && P["p5:freq"]) {
-        drawTextBox(p5, font, norm(P["p5:freq"]), L.p5.seqpat, {
-          maxLines: L.p5.seqpat.maxLines,
+    /* p4 — state / sub-state deep dive + spider chart */
+    if (p4 && L.p4) {
+      if (L.p4.spider && P["p4:stateDeep"]) {
+        drawTextBox(p4, font, norm(P["p4:stateDeep"]), L.p4.spider, {
+          maxLines: L.p4.spider.maxLines,
         });
       }
 
+      // Spider chart on p4
       let chartUrl = norm(P["p5:chart"] || P.spiderChartUrl || P.chartUrl);
-      if (chartUrl && L.p4?.chart) {
+      if (chartUrl && L.p4.chart) {
         try {
           const u = new URL(chartUrl);
           u.searchParams.set("v", Date.now().toString(36));
@@ -743,11 +664,18 @@ export default async function handler(req, res) {
         } catch {}
         const img = await embedRemoteImage(pdfDoc, chartUrl);
         if (img) {
-          const H = p5.getHeight();
+          const H = p4.getHeight();
           const { x, y, w, h } = L.p4.chart;
-          p5.drawImage(img, { x, y: H - y - h, width: w, height: h });
+          p4.drawImage(img, { x, y: H - y - h, width: w, height: h });
         }
       }
+    }
+
+    /* p5 — frequency narrative */
+    if (p5 && L.p5?.seqpat && P["p5:freq"]) {
+      drawTextBox(p5, font, norm(P["p5:freq"]), L.p5.seqpat, {
+        maxLines: L.p5.seqpat.maxLines,
+      });
     }
 
     /* p6 — sequence narrative */
