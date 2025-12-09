@@ -587,20 +587,21 @@ export default async function handler(req, res) {
       if (domKey && stateCfg.useAbsolute) {
         const anchor = paintStateHighlight(p3, domKey, stateCfg);
         if (anchor && stateCfg.labelText) {
-          const labelText = `${stateCfg.labelText} 👑`;
+          const labelText = stateCfg.labelText || "YOU ARE HERE";
           drawTextBox(
             p3,
             font,
-            labelText,
-            {
-              x: anchor.labelX,
-              y: anchor.labelY,
-              w: 180,
-              size: stateCfg.labelSize || 10,
-              align: "center",
-            },
-            { maxLines: 1 }
-          );
+           labelText,
+           {
+             x: anchor.labelX,
+             y: anchor.labelY,
+             w: 180,
+            size: stateCfg.labelSize || 10,
+            align: "center",
+          },
+          { maxLines: 1 }
+        );
+
         }
       }
 
