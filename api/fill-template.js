@@ -878,7 +878,7 @@ export default async function handler(req, res) {
       }
     }
 
-    /* p3 — dominant / second state shadows + "YOU ARE HERE!" + Exec / TLDR / tip + scenario images */
+    /* p3 — dominant / second state + "YOU ARE HERE!" + Exec / TLDR / tip + scenario images */
     await (async function drawPage3() {
       if (!p3 || !L.p3) return;
 
@@ -927,21 +927,13 @@ export default async function handler(req, res) {
       const comboCfg =
         comboKey && scenarios[comboKey] ? scenarios[comboKey] : null;
 
-      // 2) 2nd place shadow (lighter / smaller)
-      if (secondKey && secondKey !== domKey && absBoxes[secondKey]) {
-        drawShadowL(p3, absBoxes[secondKey], 0.7);
-      }
+      // NOTE: L-shaped shadows deliberately removed from page 3.
+      // drawShadowL is no longer called here.
 
-      // 3) dominant state shadow (full / thicker)
-      if (domKey && absBoxes[domKey]) {
-        drawShadowL(p3, absBoxes[domKey], 1.2);
-      }
-
-      // 4) "YOU ARE HERE!" label
+      // "YOU ARE HERE!" label
       if (domKey && absBoxes[domKey]) {
         const b = absBoxes[domKey];
 
-        // default label box (as before)
         const defaultLabelBox = {
           x: b.x,
           y: b.y - (stateCfg.labelOffsetTop || 18),
@@ -950,32 +942,13 @@ export default async function handler(req, res) {
           align: "center",
         };
 
-        // if layout.state.scenarios["C_T"].label exists, use that instead
-        const labelBox = comboCfg && comboCfg.label ? comboCfg.label : defaultLabelBox;
+        const labelBox =
+          comboCfg && comboCfg.label ? comboCfg.label : defaultLabelBox;
 
         drawTextBox(p3, font, "YOU ARE HERE!", labelBox, { maxLines: 1 });
       }
 
-      // 4b) Scenario-based images on p3
-      // - dominant image: "dominant state.png"
-      // - second image:   "2nd state.png"
-      //
-      // You control positions via payload.layout.p3.state.scenarios, e.g.:
-      //
-      // layout: {
-      //   p3: {
-      //     state: {
-      //       scenarios: {
-      //         "C_T": {
-      //           domImg:   { x: 280, y: 220, w: 60, h: 60 },
-      //           secondImg:{ x:  80, y: 220, w: 60, h: 60 },
-      //           label:    { x: 200, y: 210, w: 200, size: 12, align: "center" }
-      //         }
-      //       }
-      //     }
-      //   }
-      // }
-      //
+      // Scenario-based images on p3
       if (comboCfg) {
         if (comboCfg.domImg) {
           await embedLocalPng(
@@ -996,7 +969,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // 5) Exec summary + TLDR + tip
+      // Exec summary + TLDR + tip
       const exec = norm(P["p3:exec"]);
       const tldrs = [
         norm(P["p3:tldr1"]),
@@ -1047,7 +1020,7 @@ export default async function handler(req, res) {
           (P.raw && P.raw.bands) ||
           {};
 
-        // 1) hide any existing purple shape in the template under the chart
+        // hide any existing purple shape in the template under the chart
         const H = p5.getHeight();
         const { x, y, w, h } = L.p5.chart;
         p5.drawRectangle({
@@ -1055,10 +1028,10 @@ export default async function handler(req, res) {
           y: H - y - h,
           width: w,
           height: h,
-          color: rgb(1, 1, 1), // white rectangle to cover the baked-in shape
+          color: rgb(1, 1, 1),
         });
 
-        // 2) draw the dynamic QuickChart radar on top
+        // draw the dynamic QuickChart radar on top
         await embedRadarFromBands(pdfDoc, p5, L.p5.chart, bands);
       }
     }
