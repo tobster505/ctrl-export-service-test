@@ -1079,7 +1079,7 @@ export default async function handler(req, res) {
             pdfDoc,
             p3,
             comboCfg.domImg,
-            "dominant state.png"
+            "dominantstate.png"
           );
         }
 
@@ -1088,7 +1088,7 @@ export default async function handler(req, res) {
             pdfDoc,
             p3,
             comboCfg.secondImg,
-            "2nd state.png"
+            "2ndstate.png"
           );
         }
       }
