@@ -89,33 +89,31 @@ function makeSpiderChartUrl12(bandsRaw) {
     type: "radar",
     data: {
       labels: [
-        "C",
-        "",
-        "",
-        "T",
-        "",
-        "",
-        "R",
-        "",
-        "",
-        "L",
-        "",
-        "",
+        "C", "", "",
+        "T", "", "",
+        "R", "", "",
+        "L", "", ""
       ],
       datasets: [
         {
           data: vals,
           fill: true,
-          backgroundColor: "rgba(75, 46, 131, 0.35)",
+          backgroundColor: "rgba(75, 46, 131, 0.30)",
           borderColor: "rgba(75, 46, 131, 1)",
           borderWidth: 4,
+          // smoother line, rounded joins
+          tension: 0.55,
+          borderJoinStyle: "round",
+          borderCapStyle: "round",
+          // remove visible points
+          pointRadius: 0,
+          pointHoverRadius: 0,
+          pointHitRadius: 0,
           pointBackgroundColor: "rgba(75, 46, 131, 1)",
           pointBorderColor: "#ffffff",
-          pointBorderWidth: 2,
-          pointRadius: 4.5,
-          pointHoverRadius: 6,
-        },
-      ],
+          pointBorderWidth: 0
+        }
+      ]
     },
     options: {
       responsive: true,
@@ -123,10 +121,10 @@ function makeSpiderChartUrl12(bandsRaw) {
       plugins: {
         legend: { display: false },
         tooltip: { enabled: false },
-        title: { display: false },
+        title: { display: false }
       },
       layout: {
-        padding: 10,
+        padding: 10
       },
       scales: {
         r: {
@@ -137,28 +135,28 @@ function makeSpiderChartUrl12(bandsRaw) {
             showLabelBackdrop: false,
             backdropColor: "transparent",
             color: "#777777",
-            font: { size: 11 },
+            font: { size: 11 }
           },
           grid: {
             circular: true,
             color: "rgba(0, 0, 0, 0.16)",
-            lineWidth: 1.8,
+            lineWidth: 1.8
           },
           angleLines: {
             color: "rgba(0, 0, 0, 0.18)",
-            lineWidth: 1.2,
+            lineWidth: 1.2
           },
           pointLabels: {
             font: { size: 26, weight: "900" },
             color: "#333333",
-            padding: 9,
-          },
-        },
+            padding: 9
+          }
+        }
       },
       elements: {
-        line: { tension: 0.35 },
-      },
-    },
+        line: { tension: 0.55 }
+      }
+    }
   };
 
   const json = JSON.stringify(cfg);
@@ -172,6 +170,7 @@ function makeSpiderChartUrl12(bandsRaw) {
     encodeURIComponent(json)
   );
 }
+
 
 /**
  * Render the radar chart by:
