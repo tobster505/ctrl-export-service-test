@@ -641,27 +641,58 @@ function applyQueryLayoutOverrides(L, q) {
       ),
     };
   }
+
+  // --- Helper: apply overrides for a given scenario (dom+2nd combo) ---
+  const overrideScenario = (scenarioKey, prefix) => {
+    const scen = L.p3?.state?.scenarios?.[scenarioKey];
+    if (!scen) return;
+
+    // "YOU ARE HERE!" label
+    if (scen.label) {
+      scen.label = {
+        ...scen.label,
+        x: num(`${prefix}labelx`, scen.label.x),
+        y: num(`${prefix}labely`, scen.label.y),
+      };
+    }
+
+    // Dominant-state image
+    if (scen.domImg) {
+      scen.domImg = {
+        ...scen.domImg,
+        x: num(`${prefix}domx`, scen.domImg.x),
+        y: num(`${prefix}domy`, scen.domImg.y),
+      };
+    }
+
+    // Second-state image
+    if (scen.secondImg) {
+      scen.secondImg = {
+        ...scen.secondImg,
+        x: num(`${prefix}2ndx`, scen.secondImg.x),
+        y: num(`${prefix}2ndy`, scen.secondImg.y),
+      };
+    }
+  };
+
+  // Map all 12 combos to prefixes
+  overrideScenario("C_T", "CT");
+  overrideScenario("C_R", "CR");
+  overrideScenario("C_L", "CL");
+
+  overrideScenario("T_C", "TC");
+  overrideScenario("T_R", "TR");
+  overrideScenario("T_L", "TL");
+
+  overrideScenario("R_C", "RC");
+  overrideScenario("R_T", "RT");
+  overrideScenario("R_L", "RL");
+
+  overrideScenario("L_C", "LC");
+  overrideScenario("L_T", "LT");
+  overrideScenario("L_R", "LR");
 }
 
-/* embed a local PNG from /public into a TL box */
-async function embedLocalPng(pdfDoc, page, box, fname) {
-  if (!pdfDoc || !page || !box || !fname) return;
-  const bytes = await loadAssetBytes(fname);
-  const img = await pdfDoc.embedPng(bytes);
-
-  const H = page.getHeight();
-  const { x, y, w, h } = box;
-
-  page.drawImage(img, {
-    x,
-    y: H - y - h,
-    width: w,
-    height: h,
-  });
-}
-
-/* safe page accessors */
-const pageOrNull = (pages, idx0) => pages[idx0] ?? null;
 
 /* ───────────── handler ───────────── */
 export default async function handler(req, res) {
