@@ -9,6 +9,7 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { ChartJSNodeCanvas } from "chartjs-node-canvas";
 
 /* ───────────── utilities ───────────── */
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
@@ -36,6 +37,160 @@ const cleanBullet = (s) =>
 
 /* brand colour for CTRL magenta (#A64E8C) */
 const BRAND = { r: 166 / 255, g: 78 / 255, b: 140 / 255 };
+
+/* chart.js server-side radar renderer (for spider chart) */
+const chartWidth = 700;
+const chartHeight = 700;
+
+const chartJSNodeCanvas = new ChartJSNodeCanvas({
+  width: chartWidth,
+  height: chartHeight,
+  backgroundColour: "transparent",
+});
+
+/* build radar config from 12-band CTRL data */
+function buildRadarConfigFromBands(bandsRaw) {
+  const b = bandsRaw || {};
+
+  const vals = [
+    Number(b.C_low) || 0,
+    Number(b.C_mid) || 0,
+    Number(b.C_high) || 0,
+
+    Number(b.T_low) || 0,
+    Number(b.T_mid) || 0,
+    Number(b.T_high) || 0,
+
+    Number(b.R_low) || 0,
+    Number(b.R_mid) || 0,
+    Number(b.R_high) || 0,
+
+    Number(b.L_low) || 0,
+    Number(b.L_mid) || 0,
+    Number(b.L_high) || 0,
+  ];
+
+  const nonZero = vals.filter((v) => v > 0);
+  let minVal = nonZero.length ? Math.min(...nonZero) : 0;
+  let maxVal = nonZero.length ? Math.max(...nonZero) : 4;
+
+  let minAxis;
+  let maxAxis;
+
+  if (!nonZero.length) {
+    minAxis = 0;
+    maxAxis = 4;
+  } else {
+    minAxis = Math.max(0, Math.floor(minVal) - 1);
+    maxAxis = Math.min(4, Math.ceil(maxVal) + 1);
+
+    if (minAxis === maxAxis) {
+      minAxis = Math.max(0, minAxis - 1);
+      maxAxis = Math.min(4, maxAxis + 1);
+    }
+  }
+
+  return {
+    type: "radar",
+    data: {
+      labels: [
+        "C",
+        "",
+        "",
+        "T",
+        "",
+        "",
+        "R",
+        "",
+        "",
+        "L",
+        "",
+        "",
+      ],
+      datasets: [
+        {
+          data: vals,
+          fill: true,
+          backgroundColor: "rgba(75, 46, 131, 0.35)",
+          borderColor: "rgba(75, 46, 131, 1)",
+          borderWidth: 4,
+          pointBackgroundColor: "rgba(75, 46, 131, 1)",
+          pointBorderColor: "#ffffff",
+          pointBorderWidth: 2,
+          pointRadius: 4.5,
+          pointHoverRadius: 6,
+        },
+      ],
+    },
+    options: {
+      responsive: false,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+        title: { display: false },
+      },
+      layout: {
+        padding: 10,
+      },
+      scales: {
+        r: {
+          min: minAxis,
+          max: maxAxis,
+          ticks: {
+            stepSize: 1,
+            showLabelBackdrop: false,
+            backdropColor: "transparent",
+            color: "#777777",
+            font: { size: 11 },
+          },
+          grid: {
+            circular: true,
+            color: "rgba(0, 0, 0, 0.16)",
+            lineWidth: 1.8,
+          },
+          angleLines: {
+            color: "rgba(0, 0, 0, 0.18)",
+            lineWidth: 1.2,
+          },
+          pointLabels: {
+            font: { size: 26, weight: "900" },
+            color: "#333333",
+            padding: 9,
+          },
+        },
+      },
+      elements: {
+        line: { tension: 0.35 },
+      },
+    },
+  };
+}
+
+/* embed radar chart into PDF page at a given TL box */
+async function embedRadarFromBands(pdfDoc, page, box, bandsRaw) {
+  if (!pdfDoc || !page || !box || !bandsRaw) return;
+
+  const hasAny =
+    bandsRaw &&
+    Object.values(bandsRaw).some((v) => Number(v) > 0);
+
+  if (!hasAny) return;
+
+  const config = buildRadarConfigFromBands(bandsRaw);
+  const pngBuffer = await chartJSNodeCanvas.renderToBuffer(config, "image/png");
+  const img = await pdfDoc.embedPng(pngBuffer);
+
+  const H = page.getHeight();
+  const { x, y, w, h } = box;
+
+  page.drawImage(img, {
+    x,
+    y: H - y - h,
+    width: w,
+    height: h,
+  });
+}
 
 /* embed remote image (QuickChart etc.) */
 async function embedRemoteImage(pdfDoc, url) {
@@ -727,22 +882,17 @@ export default async function handler(req, res) {
         });
       }
 
-      // Spider chart on p4
-      let chartUrl = norm(P["p5:chart"] || P.spiderChartUrl || P.chartUrl);
-      if (chartUrl && L.p4.chart) {
-        try {
-          const u = new URL(chartUrl);
-          u.searchParams.set("v", Date.now().toString(36));
-          chartUrl = u.toString();
-        } catch {
-          // ignore URL parse errors, try as-is
-        }
-        const img = await embedRemoteImage(pdfDoc, chartUrl);
-        if (img) {
-          const H = p4.getHeight();
-          const { x, y, w, h } = L.p4.chart;
-          p4.drawImage(img, { x, y: H - y - h, width: w, height: h });
-        }
+      // Spider chart on p4 — rendered from 12-band CTRL data
+      if (L.p4.chart) {
+        const bands =
+          P.bands ||
+          (P.raw &&
+            P.raw.ctrl &&
+            (P.raw.ctrl.bands || (P.raw.ctrl.summary && P.raw.ctrl.summary.bands))) ||
+          (P.raw && P.raw.bands) ||
+          {};
+
+        await embedRadarFromBands(pdfDoc, p4, L.p4.chart, bands);
       }
     }
 
