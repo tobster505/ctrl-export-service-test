@@ -356,6 +356,23 @@ function resolveDomKey(dom, domChar, domDesc) {
   return "R";
 }
 
+/* embed a local PNG from /public into a TL box */
+async function embedLocalPng(pdfDoc, page, box, fname) {
+  if (!pdfDoc || !page || !box || !fname) return;
+  const bytes = await loadAssetBytes(fname);
+  const img = await pdfDoc.embedPng(bytes);
+
+  const H = page.getHeight();
+  const { x, y, w, h } = box;
+
+  page.drawImage(img, {
+    x,
+    y: H - y - h,
+    width: w,
+    height: h,
+  });
+}
+
 /* ───────────── robust data parser ───────────── */
 
 function parseDataParam(raw) {
@@ -693,6 +710,8 @@ function applyQueryLayoutOverrides(L, q) {
   overrideScenario("L_R", "LR");
 }
 
+/* safe page accessors */
+const pageOrNull = (pages, idx0) => pages[idx0] ?? null;
 
 /* ───────────── handler ───────────── */
 export default async function handler(req, res) {
@@ -966,7 +985,7 @@ export default async function handler(req, res) {
       L = mergeLayout(L, P.layout);
     }
 
-    // 2) apply simple query-string tweaks (Execx, Execy, Execw, Execmaxlines)
+    // 2) apply simple query-string tweaks (Execx, Execy, Execw, Execmaxlines, CTlabelx, etc.)
     applyQueryLayoutOverrides(L, q);
 
     /* p1 — cover (name + date) */
