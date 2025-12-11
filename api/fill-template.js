@@ -1,308 +1,24 @@
-/**
- * CTRL PoC Export Service · fill-template (Starter/PoC flow)
- * Place at: /api/fill-template.js  (ctrl-poc-service)
- */
-export const config = { runtime: "nodejs" };
-
-/* ───────────── imports ───────────── */
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-/* ───────────── utilities ───────────── */
-const S = (v, fb = "") => (v == null ? String(fb) : String(v));
-const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
-const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
-
-const norm = (s) =>
-  S(s || "")
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, " ")
-    .replace(/[ \f\v]+/g, " ")
-    .replace(/[ \t]+\n/g, "\n")
+/* simple helpers */
+const S = (v: any) => (v == null ? "" : String(v));
+const N = (v: any, fb = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fb;
+};
+const norm = (s: string) =>
+  S(s)
+    .replace(/\s+/g, " ")
     .trim();
 
-const splitToList = (s) =>
-  norm(s)
-    .split(/\n+/)
-    .map((x) => x.trim())
-    .filter(Boolean);
+/* brand colour (magenta-ish) */
+const BRAND = { r: 0.72, g: 0.06, b: 0.44 };
 
-const cleanBullet = (s) =>
-  S(s || "")
-    .replace(/^\s*[-–—•·]\s*/u, "")
-    .trim();
-
-/* brand colour for CTRL magenta (#A64E8C) */
-const BRAND = { r: 166 / 255, g: 78 / 255, b: 140 / 255 };
-
-/* ───────────── chart helpers (QuickChart, 12-band spider) ───────────── */
-
-/**
- * Build a 12-axis radar chart URL from CTRL bands using QuickChart.
- * Axes: C_low, C_mid, C_high, T_low, ..., L_high
- * Labels: C / T / R / L (big), blanks for sub-points.
- */
-function makeSpiderChartUrl12(bandsRaw) {
-  const b = bandsRaw || {};
-
-  const vals = [
-    Number(b.C_low) || 0,
-    Number(b.C_mid) || 0,
-    Number(b.C_high) || 0,
-
-    Number(b.T_low) || 0,
-    Number(b.T_mid) || 0,
-    Number(b.T_high) || 0,
-
-    Number(b.R_low) || 0,
-    Number(b.R_mid) || 0,
-    Number(b.R_high) || 0,
-
-    Number(b.L_low) || 0,
-    Number(b.L_mid) || 0,
-    Number(b.L_high) || 0,
-  ];
-
-  const nonZero = vals.filter((v) => v > 0);
-  let minVal = nonZero.length ? Math.min(...nonZero) : 0;
-  let maxVal = nonZero.length ? Math.max(...nonZero) : 4;
-
-  let minAxis;
-  let maxAxis;
-
-  if (!nonZero.length) {
-    minAxis = 0;
-    maxAxis = 4;
-  } else {
-    minAxis = Math.max(0, Math.floor(minVal) - 1);
-    maxAxis = Math.min(4, Math.ceil(maxVal) + 1);
-
-    if (minAxis === maxAxis) {
-      minAxis = Math.max(0, minAxis - 1);
-      maxAxis = Math.min(4, maxAxis + 1);
-    }
-  }
-
-  const cfg = {
-    type: "radar",
-    data: {
-      labels: [
-        "C",
-        "",
-        "",
-        "T",
-        "",
-        "",
-        "R",
-        "",
-        "",
-        "L",
-        "",
-        "",
-      ],
-      datasets: [
-        {
-          data: vals,
-          fill: true,
-          backgroundColor: "rgba(75, 46, 131, 0.30)",
-          borderColor: "rgba(75, 46, 131, 1)",
-          borderWidth: 3,
-          // smoother line, rounded joins but less bendy
-          tension: 0.4,
-          borderJoinStyle: "round",
-          borderCapStyle: "round",
-          // keep drawing clipped to chart area
-          clip: 0,
-          // no visible points
-          pointRadius: 0,
-          pointHoverRadius: 0,
-          pointHitRadius: 0,
-          pointBackgroundColor: "rgba(75, 46, 131, 1)",
-          pointBorderColor: "#ffffff",
-          pointBorderWidth: 0,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: { enabled: false },
-        title: { display: false },
-      },
-      layout: {
-        padding: 10,
-      },
-      scales: {
-        r: {
-          min: minAxis,
-          max: maxAxis,
-          ticks: {
-            stepSize: 1,
-            showLabelBackdrop: false,
-            backdropColor: "transparent",
-            color: "#777777",
-            font: { size: 11 },
-          },
-          grid: {
-            circular: true,
-            color: "rgba(0, 0, 0, 0.16)",
-            lineWidth: 1.8,
-          },
-          angleLines: {
-            color: "rgba(0, 0, 0, 0.18)",
-            lineWidth: 1.2,
-          },
-          pointLabels: {
-            font: { size: 26, weight: "900" },
-            color: "#333333",
-            padding: 9,
-          },
-        },
-      },
-      elements: {
-        line: { tension: 0.4 },
-      },
-    },
-  };
-
-  const json = JSON.stringify(cfg);
-
-  return (
-    "https://quickchart.io/chart" +
-    "?version=4" +
-    "&width=700&height=700" +
-    "&backgroundColor=rgba(0,0,0,0)" +
-    "&c=" +
-    encodeURIComponent(json)
-  );
-}
-
-/**
- * Render the radar chart by:
- *  - building the QuickChart URL from bands
- *  - downloading the PNG via embedRemoteImage
- *  - drawing it into the TL box on the page.
- */
-async function embedRadarFromBands(pdfDoc, page, box, bandsRaw) {
-  if (!pdfDoc || !page || !box || !bandsRaw) return;
-
-  const hasAny =
-    bandsRaw && Object.values(bandsRaw).some((v) => Number(v) > 0);
-  if (!hasAny) return;
-
-  const url = makeSpiderChartUrl12(bandsRaw);
-  if (!url) return;
-
-  const img = await embedRemoteImage(pdfDoc, url);
-  if (!img) return;
-
-  const H = page.getHeight();
-  const { x, y, w, h } = box;
-
-  page.drawImage(img, {
-    x,
-    y: H - y - h,
-    width: w,
-    height: h,
-  });
-}
-
-/* embed remote image (QuickChart etc.) */
-async function embedRemoteImage(pdfDoc, url) {
-  if (!url) return null;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
-    const arr = new Uint8Array(buf);
-    // naive mime sniff
-    const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3] || 0);
-    if (sig.startsWith("\x89PNG")) {
-      return await pdfDoc.embedPng(arr);
-    }
-    if (sig.startsWith("\xff\xd8")) {
-      return await pdfDoc.embedJpg(arr);
-    }
-    // fallback: try both
-    try {
-      return await pdfDoc.embedPng(arr);
-    } catch {
-      return await pdfDoc.embedJpg(arr);
-    }
-  } catch {
-    return null;
-  }
-}
-
-/* text wrapping */
-function drawTextBox(page, font, text, box, opts = {}) {
-  if (!page || !font || !box) return;
-  const raw = S(text || "");
-  if (!raw) return;
-
-  const {
-    size = box.size || 12,
-    align = box.align || "left",
-    maxLines = opts.maxLines ?? box.maxLines ?? 99,
-    lineGap = box.lineGap ?? 4,
-    color = rgb(0, 0, 0),
-  } = box;
-
-  const txt = norm(raw);
-  if (!txt) return;
-
-  const pageH = page.getHeight();
-  const x = N(box.x, 0);
-  const yTop = N(box.y, 0);
-  const w = N(box.w, 500);
-
-  const words = txt.split(/\s+/);
-  const lines = [];
-  let current = "";
-
-  const fontSize = size;
-  const maxWidth = w;
-
-  for (const word of words) {
-    const testLine = current ? current + " " + word : word;
-    const testWidth = font.widthOfTextAtSize(testLine, fontSize);
-    if (testWidth <= maxWidth || !current) {
-      current = testLine;
-    } else {
-      lines.push(current);
-      current = word;
-      if (lines.length >= maxLines) break;
-    }
-  }
-  if (current && lines.length < maxLines) lines.push(current);
-
-  const totalHeight = lines.length * fontSize + (lines.length - 1) * lineGap;
-  let yStart = pageH - yTop - fontSize;
-  if (box.valign === "middle" || box.valign === "center") {
-    yStart = pageH - yTop - totalHeight / 2;
-  } else if (box.valign === "bottom") {
-    yStart = pageH - yTop - totalHeight;
-  }
-
-  lines.forEach((ln, idx) => {
-    const lineWidth = font.widthOfTextAtSize(ln, fontSize);
-    let drawX = x;
-    if (align === "center") {
-      drawX = x + (w - lineWidth) / 2;
-    } else if (align === "right") {
-      drawX = x + (w - lineWidth);
-    }
-    const drawY = yStart - idx * (fontSize + lineGap);
-    page.drawText(ln, { x: drawX, y: drawY, size: fontSize, font, color });
-  });
-}
-
-/* convert TL coords to BL rect */
-const rectTLtoBL = (page, box, inset = 0) => {
+/* TL → BL rect helper */
+const rectTLtoBL = (page: any, box: any, inset = 0) => {
   const pageH = page.getHeight();
   const x = N(box.x) + inset;
   const w = Math.max(0, N(box.w) - inset * 2);
@@ -312,21 +28,18 @@ const rectTLtoBL = (page, box, inset = 0) => {
 };
 
 /* L-shaped magenta “shadow” under a card */
-function drawShadowL(page, absBox, strength = 1) {
+function drawShadowL(page: any, absBox: any, strength = 1) {
   if (!page || !absBox) return;
 
-  // Convert TL box to BL coords once
   const rect = rectTLtoBL(page, absBox, 0);
   const x = rect.x;
   const y = rect.y;
   const w = rect.w;
   const h = rect.h;
 
-  // Tune these numbers to match your template shadow thickness
-  const sideWidth = 18 * strength; // right-hand bar
-  const baseHeight = 18 * strength; // bottom bar
+  const sideWidth = 18 * strength;
+  const baseHeight = 18 * strength;
 
-  // bottom bar
   page.drawRectangle({
     x,
     y,
@@ -335,7 +48,6 @@ function drawShadowL(page, absBox, strength = 1) {
     color: rgb(BRAND.r, BRAND.g, BRAND.b),
   });
 
-  // right-hand bar (goes up the full card height and sits on the base)
   page.drawRectangle({
     x: x + w - sideWidth,
     y,
@@ -345,7 +57,7 @@ function drawShadowL(page, absBox, strength = 1) {
   });
 }
 
-function resolveDomKey(dom, domChar, domDesc) {
+function resolveDomKey(dom: any, domChar: any, domDesc: any) {
   const d = S(dom || "").trim().charAt(0).toUpperCase();
   if (["C", "T", "R", "L"].includes(d)) return d;
   const s = S(domChar || domDesc || "").toLowerCase();
@@ -356,8 +68,53 @@ function resolveDomKey(dom, domChar, domDesc) {
   return "R";
 }
 
+/**
+ * Compute dominant + second-state single-letter keys ("C","T","R","L")
+ * from the normalised payload.
+ */
+function computeDomAndSecondKeys(P: any) {
+  const raw = (P && P.raw) || {};
+  const ctrl = raw.ctrl || {};
+  const summary = ctrl.summary || {};
+
+  const domKey = resolveDomKey(
+    P["p3:dom"] || P.dom || ctrl.dominant || ctrl.dominantState,
+    P.domChar,
+    P.domDesc
+  );
+
+  let secondKey = "";
+  if (ctrl.secondState) {
+    secondKey = S(ctrl.secondState).trim().charAt(0).toUpperCase();
+  } else if (P.dom2) {
+    secondKey = S(P.dom2).trim().charAt(0).toUpperCase();
+  }
+
+  if (!["C", "T", "R", "L"].includes(secondKey)) {
+    const counts =
+      P.counts ||
+      ctrl.counts ||
+      summary.counts ||
+      summary.stateFrequency ||
+      {};
+    const keys = ["C", "T", "R", "L"];
+    const ranked = keys
+      .map((k) => ({ k, n: Number(counts[k] || 0) || 0 }))
+      .sort((a, b) => b.n - a.n);
+    const bestNonDom = ranked.find((r) => r.k !== domKey && r.n > 0);
+    if (bestNonDom) secondKey = bestNonDom.k;
+  }
+
+  return { domKey, secondKey };
+}
+
 /* embed a local PNG from /public into a TL box */
-async function embedLocalPng(pdfDoc, page, box, fname) {
+async function embedLocalPng(
+  pdfDoc: PDFDocument,
+  page: any,
+  box: any,
+  fname: string
+) {
   if (!pdfDoc || !page || !box || !fname) return;
   const bytes = await loadAssetBytes(fname);
   const img = await pdfDoc.embedPng(bytes);
@@ -375,12 +132,11 @@ async function embedLocalPng(pdfDoc, page, box, fname) {
 
 /* ───────────── robust data parser ───────────── */
 
-function parseDataParam(raw) {
+function parseDataParam(raw: any) {
   if (!raw) return {};
 
   const enc = String(raw);
 
-  // 1) Try direct JSON first (most likely with Next.js query parsing)
   try {
     const obj = JSON.parse(enc);
     console.log("[fill-template] parseDataParam: parsed direct JSON");
@@ -389,12 +145,11 @@ function parseDataParam(raw) {
     // ignore
   }
 
-  // 2) Try decodeURIComponent + JSON
   let decoded = enc;
   try {
     decoded = decodeURIComponent(enc);
   } catch {
-    // ignore if not URI encoded
+    // ignore
   }
   try {
     const obj = JSON.parse(decoded);
@@ -404,7 +159,6 @@ function parseDataParam(raw) {
     // ignore
   }
 
-  // 3) Try base64-encoded JSON (legacy behaviour)
   try {
     let b64 = decoded.replace(/-/g, "+").replace(/_/g, "/");
     while (b64.length % 4) b64 += "=";
@@ -419,7 +173,7 @@ function parseDataParam(raw) {
 }
 
 /* GET/POST payload reader */
-async function readPayload(req) {
+async function readPayload(req: any) {
   if (req.method === "POST") {
     const body = req.body || {};
     if (body.data) return parseDataParam(body.data);
@@ -427,14 +181,29 @@ async function readPayload(req) {
     return {};
   }
 
-  // GET
   const q = req.query || {};
   if (q.data) return parseDataParam(q.data);
   return {};
 }
 
+/* simple list + bullet cleaners */
+function splitToList(s: any): string[] {
+  const txt = S(s || "");
+  if (!txt) return [];
+  return txt
+    .split(/\r?\n/)
+    .map((ln) => ln.trim())
+    .filter(Boolean);
+}
+
+function cleanBullet(s: any): string {
+  return S(s || "")
+    .replace(/^[\-–—•·]\s*/i, "")
+    .trim();
+}
+
 /* ───────────── normalise new CTRL PoC payload ───────────── */
-function normaliseInput(d = {}) {
+function normaliseInput(d: any = {}) {
   const identity = d.identity || {};
   const ctrl = d.ctrl || {};
   const summary = ctrl.summary || {};
@@ -462,7 +231,6 @@ function normaliseInput(d = {}) {
     d["p1:d"] ||
     "";
 
-  // dominant + second state (accepts new ctrl.dominant)
   const domState =
     ctrl.dominant ||
     ctrl.dominantState ||
@@ -473,7 +241,6 @@ function normaliseInput(d = {}) {
 
   const dom2State = ctrl.secondState || d.dom2 || d["p3:dom2"] || "";
 
-  // counts (4 state): from ctrl.counts OR summary.counts/stateFrequency
   const counts =
     ctrl.counts ||
     summary.counts ||
@@ -489,7 +256,7 @@ function normaliseInput(d = {}) {
 
   const actsIn = actionsObj.list || d.actions || d.actionsText || [];
   const actsList = Array.isArray(actsIn)
-    ? actsIn.map((a) => cleanBullet(a.text || a))
+    ? actsIn.map((a: any) => cleanBullet(a.text || a))
     : splitToList(actsIn).map(cleanBullet);
   const act1 = actsList[0] || d["p9:action1"] || "";
   const act2 = actsList[1] || d["p9:action2"] || "";
@@ -502,7 +269,7 @@ function normaliseInput(d = {}) {
     d["p5:chart"] ||
     "";
 
-  const out = {
+  const out: any = {
     raw: d,
     person: d.person || { fullName: nameCand || "" },
     name: nameCand || "",
@@ -518,8 +285,6 @@ function normaliseInput(d = {}) {
     actions: actsList,
     chartUrl,
     layout: d.layout || null,
-
-    // passthrough for any 12-band data if you want later
     bands: ctrl.bands || summary.bands || d.bands || {},
 
     "p1:n": d["p1:n"] || nameCand || "",
@@ -559,7 +324,7 @@ function normaliseInput(d = {}) {
 
 /* ───────────── template + asset loaders ───────────── */
 
-async function loadTemplateBytesLocal(fname) {
+async function loadTemplateBytesLocal(fname: string) {
   if (!fname.endsWith(".pdf"))
     throw new Error(`Invalid template filename: ${fname}`);
 
@@ -574,7 +339,7 @@ async function loadTemplateBytesLocal(fname) {
     path.join(__dir, fname),
   ];
 
-  let lastErr;
+  let lastErr: any;
   for (const pth of candidates) {
     try {
       return await fs.readFile(pth);
@@ -590,7 +355,7 @@ async function loadTemplateBytesLocal(fname) {
 }
 
 /* generic asset loader (kept for future assets if needed) */
-async function loadAssetBytes(fname) {
+async function loadAssetBytes(fname: string) {
   const __file = fileURLToPath(import.meta.url);
   const __dir = path.dirname(__file);
 
@@ -602,7 +367,7 @@ async function loadAssetBytes(fname) {
     path.join(__dir, fname),
   ];
 
-  let lastErr;
+  let lastErr: any;
   for (const pth of candidates) {
     try {
       return await fs.readFile(pth);
@@ -619,13 +384,13 @@ async function loadAssetBytes(fname) {
 
 /* ───────────── layout helpers / overrides ───────────── */
 
-function isPlainObject(obj) {
+function isPlainObject(obj: any) {
   return obj && typeof obj === "object" && !Array.isArray(obj);
 }
 
-function mergeLayout(base, override) {
+function mergeLayout(base: any, override: any) {
   if (!isPlainObject(base)) return base;
-  const out = { ...base };
+  const out: any = { ...base };
   if (!isPlainObject(override)) return out;
 
   for (const [k, v] of Object.entries(override)) {
@@ -639,12 +404,13 @@ function mergeLayout(base, override) {
 }
 
 /* apply simple query-string overrides like Execx, Execy, etc. */
-function applyQueryLayoutOverrides(L, q) {
+function applyQueryLayoutOverrides(L: any, q: any) {
   if (!L || !q) return;
 
-  const num = (k, fb) => (q[k] != null ? (Number(q[k]) || fb) : fb);
+  const num = (k: string, fb: number) =>
+    q[k] != null ? (Number(q[k]) || fb) : fb;
 
-  // Example: Exec summary box on p3 (Execx, Execy, Execw, Execmaxlines)
+  // Exec summary box on p3 (Execx, Execy, Execw, Execmaxlines)
   if (L.p3 && L.p3.domDesc) {
     const box = L.p3.domDesc;
     L.p3.domDesc = {
@@ -658,67 +424,221 @@ function applyQueryLayoutOverrides(L, q) {
       ),
     };
   }
-
-  // --- Helper: apply overrides for a given scenario (dom+2nd combo) ---
-  const overrideScenario = (scenarioKey, prefix) => {
-    const scen = L.p3?.state?.scenarios?.[scenarioKey];
-    if (!scen) return;
-
-    // "YOU ARE HERE!" label
-    if (scen.label) {
-      scen.label = {
-        ...scen.label,
-        x: num(`${prefix}labelx`, scen.label.x),
-        y: num(`${prefix}labely`, scen.label.y),
-      };
-    }
-
-    // Dominant-state image
-    if (scen.domImg) {
-      scen.domImg = {
-        ...scen.domImg,
-        x: num(`${prefix}domx`, scen.domImg.x),
-        y: num(`${prefix}domy`, scen.domImg.y),
-      };
-    }
-
-    // Second-state image
-    if (scen.secondImg) {
-      scen.secondImg = {
-        ...scen.secondImg,
-        x: num(`${prefix}2ndx`, scen.secondImg.x),
-        y: num(`${prefix}2ndy`, scen.secondImg.y),
-      };
-    }
-  };
-
-  // Map all 12 combos to prefixes
-  overrideScenario("C_T", "CT");
-  overrideScenario("C_R", "CR");
-  overrideScenario("C_L", "CL");
-
-  overrideScenario("T_C", "TC");
-  overrideScenario("T_R", "TR");
-  overrideScenario("T_L", "TL");
-
-  overrideScenario("R_C", "RC");
-  overrideScenario("R_T", "RT");
-  overrideScenario("R_L", "RL");
-
-  overrideScenario("L_C", "LC");
-  overrideScenario("L_T", "LT");
-  overrideScenario("L_R", "LR");
 }
 
 /* safe page accessors */
-const pageOrNull = (pages, idx0) => pages[idx0] ?? null;
+const pageOrNull = (pages: any[], idx0: number) => pages[idx0] ?? null;
+
+/* ───────────── chart helpers ───────────── */
+
+function makeSpiderChartUrl12(bandsRaw: any) {
+  const labels = [
+    "C_low",
+    "C_mid",
+    "C_high",
+    "T_low",
+    "T_mid",
+    "T_high",
+    "R_low",
+    "R_mid",
+    "R_high",
+    "L_low",
+    "L_mid",
+    "L_high",
+  ];
+
+  const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
+
+  const maxVal = Math.max(...vals, 1);
+  const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
+
+  const cfg = {
+    type: "radar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "",
+          data: scaled,
+          fill: true,
+          borderWidth: 3,
+          pointRadius: 4,
+          pointHoverRadius: 5,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+      },
+      scales: {
+        r: {
+          suggestedMin: 0,
+          suggestedMax: 1,
+          ticks: {
+            display: false,
+          },
+          grid: {
+            circular: true,
+            lineWidth: 1,
+          },
+          angleLines: {
+            color: "rgba(0, 0, 0, 0.18)",
+            lineWidth: 1.2,
+          },
+          pointLabels: {
+            font: { size: 26, weight: "900" },
+            color: "#333333",
+            padding: 9,
+          },
+        },
+      },
+      elements: {
+        line: { tension: 0.4 },
+      },
+    },
+  };
+
+  const json = JSON.stringify(cfg);
+
+  return (
+    "https://quickchart.io/chart" +
+    "?version=4" +
+    "&width=700&height=700" +
+    "&backgroundColor=rgba(0,0,0,0)" +
+    "&c=" +
+    encodeURIComponent(json)
+  );
+}
+
+async function embedRadarFromBands(
+  pdfDoc: PDFDocument,
+  page: any,
+  box: any,
+  bandsRaw: any
+) {
+  if (!pdfDoc || !page || !box || !bandsRaw) return;
+
+  const hasAny =
+    bandsRaw && Object.values(bandsRaw).some((v) => Number(v) > 0);
+  if (!hasAny) return;
+
+  const url = makeSpiderChartUrl12(bandsRaw);
+  if (!url) return;
+
+  const img = await embedRemoteImage(pdfDoc, url);
+  if (!img) return;
+
+  const H = page.getHeight();
+  const { x, y, w, h } = box;
+
+  page.drawImage(img, {
+    x,
+    y: H - y - h,
+    width: w,
+    height: h,
+  });
+}
+
+async function embedRemoteImage(pdfDoc: PDFDocument, url: string) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    const arr = new Uint8Array(buf);
+    const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3] || 0);
+    if (sig.startsWith("\x89PNG")) {
+      return await pdfDoc.embedPng(arr);
+    }
+    if (sig.startsWith("\xff\xd8")) {
+      return await pdfDoc.embedJpg(arr);
+    }
+    try {
+      return await pdfDoc.embedPng(arr);
+    } catch {
+      return await pdfDoc.embedJpg(arr);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/* text wrapping */
+function drawTextBox(
+  page: any,
+  font: any,
+  text: string,
+  box: any,
+  opts: any = {}
+) {
+  if (!page || !font || !box) return;
+  const raw = S(text || "");
+  if (!raw) return;
+
+  const {
+    size = box.size || 12,
+    align = box.align || "left",
+    maxLines = opts.maxLines ?? box.maxLines ?? 99,
+    lineGap = box.lineGap ?? 4,
+    color = rgb(0, 0, 0),
+  } = box;
+
+  const txt = norm(raw);
+  if (!txt) return;
+
+  const pageH = page.getHeight();
+  const x = N(box.x, 0);
+  const yTop = N(box.y, 0);
+  const w = N(box.w, 500);
+
+  const words = txt.split(/\s+/);
+  const lines: string[] = [];
+  let current = "";
+
+  const fontSize = size;
+  const maxWidth = w;
+
+  for (const word of words) {
+    const testLine = current ? current + " " + word : word;
+    const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+    if (testWidth <= maxWidth || !current) {
+      current = testLine;
+    } else {
+      lines.push(current);
+      current = word;
+      if (lines.length >= maxLines) break;
+    }
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+
+  const totalHeight = lines.length * fontSize + (lines.length - 1) * lineGap;
+  let yStart = pageH - yTop - fontSize;
+  if (box.valign === "middle" || box.valign === "center") {
+    yStart = pageH - yTop - totalHeight / 2;
+  } else if (box.valign === "bottom") {
+    yStart = pageH - yTop - totalHeight;
+  }
+
+  lines.forEach((ln, idx) => {
+    const lineWidth = font.widthOfTextAtSize(ln, fontSize);
+    let drawX = x;
+    if (align === "center") {
+      drawX = x + (w - lineWidth) / 2;
+    } else if (align === "right") {
+      drawX = x + (w - lineWidth);
+    }
+    const drawY = yStart - idx * (fontSize + lineGap);
+    page.drawText(ln, { x: drawX, y: drawY, size: fontSize, font, color });
+  });
+}
 
 /* ───────────── handler ───────────── */
-export default async function handler(req, res) {
+export default async function handler(req: any, res: any) {
   try {
-    const q = req.method === "POST" ? (req.body || {}) : (req.query || {});
-    const defaultTpl = "CTRL_PoC_Assessment_Profile_template.pdf";
-    const tpl = S(q.tpl || defaultTpl).replace(/[^A-Za-z0-9._-]/g, "");
+    const q = req.method === "POST" ? req.body || {} : req.query || {};
 
     const src = await readPayload(req);
 
@@ -737,6 +657,39 @@ export default async function handler(req, res) {
       P_dateLbl: P.dateLbl || null,
       P_p1d: P["p1:d"] || null,
     });
+
+    // Compute dominant + second state keys and choose template
+    const { domKey, secondKey } = computeDomAndSecondKeys(P);
+
+    let combo = "";
+    if (domKey && secondKey && secondKey !== domKey) {
+      combo = `${domKey}${secondKey}`;
+    }
+
+    const validCombos = new Set([
+      "CT",
+      "CL",
+      "CR",
+      "TC",
+      "TR",
+      "TL",
+      "RC",
+      "RT",
+      "RL",
+      "LC",
+      "LR",
+      "LT",
+    ]);
+
+    let tplBase: string;
+    if (validCombos.has(combo)) {
+      tplBase = `CTRL_PoC_Assessment_Profile_template_${combo}.pdf`;
+    } else {
+      // defensive fallback
+      tplBase = "CTRL_PoC_Assessment_Profile_template_CT.pdf";
+    }
+
+    const tpl = S(tplBase).replace(/[^A-Za-z0-9._-]/g, "");
 
     const pdfBytes = await loadTemplateBytesLocal(tpl);
     const pdfDoc = await PDFDocument.load(pdfBytes);
@@ -757,7 +710,7 @@ export default async function handler(req, res) {
     const p12 = pageOrNull(pages, 11);
 
     // Layout anchors (tl coords in pt)
-    let L = {
+    let L: any = {
       p1: {
         name: { x: 7, y: 473, w: 500, size: 30, align: "center" },
         date: { x: 210, y: 600, w: 500, size: 25, align: "left" },
@@ -789,125 +742,46 @@ export default async function handler(req, res) {
           },
           labelSize: 12,
           labelOffsetTop: 18,
-          // scenario-specific overrides for "YOU ARE HERE!" + images
-          scenarios: {
-            // 1. C + T
-            C_T: {
-              label: { x: 58, y: 235, w: 188, size: 12, align: "center" },
-              domImg: { x: 122, y: 205, w: 60, h: 60 }, // above C
-              secondImg: { x: 367, y: 205, w: 60, h: 60 }, // above T
-            },
-            // 2. C + R
-            C_R: {
-              label: { x: 58, y: 235, w: 188, size: 12, align: "center" },
-              domImg: { x: 122, y: 205, w: 60, h: 60 }, // above C
-              secondImg: { x: 124, y: 380, w: 60, h: 60 }, // above R
-            },
-            // 3. C + L
-            C_L: {
-              label: { x: 58, y: 235, w: 188, size: 12, align: "center" },
-              domImg: { x: 122, y: 205, w: 60, h: 60 }, // above C
-              secondImg: { x: 366, y: 380, w: 60, h: 60 }, // above L
-            },
-            // 4. T + C
-            T_C: {
-              label: { x: 299, y: 235, w: 196, size: 12, align: "center" },
-              domImg: { x: 367, y: 205, w: 60, h: 60 }, // above T
-              secondImg: { x: 122, y: 205, w: 60, h: 60 }, // above C
-            },
-            // 5. T + R
-            T_R: {
-              label: { x: 299, y: 235, w: 196, size: 12, align: "center" },
-              domImg: { x: 367, y: 205, w: 60, h: 60 }, // above T
-              secondImg: { x: 124, y: 380, w: 60, h: 60 }, // above R
-            },
-            // 6. T + L
-            T_L: {
-              label: { x: 299, y: 235, w: 196, size: 12, align: "center" },
-              domImg: { x: 367, y: 205, w: 60, h: 60 }, // above T
-              secondImg: { x: 366, y: 380, w: 60, h: 60 }, // above L
-            },
-            // 7. R + C
-            R_C: {
-              label: { x: 60, y: 410, w: 188, size: 12, align: "center" },
-              domImg: { x: 124, y: 380, w: 60, h: 60 }, // above R
-              secondImg: { x: 122, y: 205, w: 60, h: 60 }, // above C
-            },
-            // 8. R + T
-            R_T: {
-              label: { x: 60, y: 410, w: 188, size: 12, align: "center" },
-              domImg: { x: 124, y: 380, w: 60, h: 60 }, // above R
-              secondImg: { x: 367, y: 205, w: 60, h: 60 }, // above T
-            },
-            // 9. R + L
-            R_L: {
-              label: { x: 60, y: 410, w: 188, size: 12, align: "center" },
-              domImg: { x: 124, y: 380, w: 60, h: 60 }, // above R
-              secondImg: { x: 366, y: 380, w: 60, h: 60 }, // above L
-            },
-            // 10. L + C
-            L_C: {
-              label: { x: 298, y: 407, w: 195, size: 12, align: "center" },
-              domImg: { x: 366, y: 375, w: 60, h: 60 }, // above L
-              secondImg: { x: 122, y: 205, w: 60, h: 60 }, // above C
-            },
-            // 11. L + T
-            L_T: {
-              label: { x: 298, y: 407, w: 195, size: 12, align: "center" },
-              domImg: { x: 366, y: 375, w: 60, h: 60 }, // above L
-              secondImg: { x: 367, y: 205, w: 60, h: 60 }, // above T
-            },
-            // 12. L + R
-            L_R: {
-              label: { x: 298, y: 407, w: 195, size: 12, align: "center" },
-              domImg: { x: 366, y: 375, w: 60, h: 60 }, // above L
-              secondImg: { x: 124, y: 380, w: 60, h: 60 }, // above R
-            },
-          },
         },
       },
       p4: {
         spider: {
-          x: 30,
-          y: 585,
+          x: 25,
+          y: 347,
           w: 550,
-          size: 16,
+          size: 18,
           align: "left",
-          maxLines: 15,
+          maxLines: 20,
         },
       },
       p5: {
         seqpat: {
           x: 25,
-          y: 250,
+          y: 347,
           w: 550,
           size: 18,
           align: "left",
-          maxLines: 12,
+          maxLines: 20,
         },
-        // chart now lives on page 5
-        chart: { x: 35, y: 235, w: 540, h: 260 },
+        chart: { x: 48, y: 462, w: 500, h: 300 },
       },
       p6: {
-        theme: null,
         themeExpl: {
           x: 25,
-          y: 560,
+          y: 347,
           w: 550,
           size: 18,
           align: "left",
-          maxLines: 12,
+          maxLines: 20,
         },
       },
       p7: {
         colBoxes: [
-          { x: 25, y: 330, w: 260, h: 120 },
-          { x: 320, y: 330, w: 260, h: 120 },
-          { x: 25, y: 595, w: 260, h: 120 },
-          { x: 320, y: 595, w: 260, h: 120 },
+          { x: 25, y: 330, w: 260, h: 420 },
+          { x: 320, y: 330, w: 260, h: 420 },
         ],
         bodySize: 13,
-        maxLines: 15,
+        maxLines: 22,
       },
       p8: {
         colBoxes: [
@@ -980,12 +854,10 @@ export default async function handler(req, res) {
       },
     };
 
-    // 1) merge any layout overrides coming from payload.data.layout
     if (P.layout && typeof P.layout === "object") {
       L = mergeLayout(L, P.layout);
     }
 
-    // 2) apply simple query-string tweaks (Execx, Execy, Execw, Execmaxlines, CTlabelx, etc.)
     applyQueryLayoutOverrides(L, q);
 
     /* p1 — cover (name + date) */
@@ -1002,98 +874,10 @@ export default async function handler(req, res) {
       }
     }
 
-    /* p3 — dominant / second state + "YOU ARE HERE!" + Exec / TLDR / tip + scenario images */
+    /* p3 — Exec / TLDR / tip block */
     await (async function drawPage3() {
       if (!p3 || !L.p3) return;
 
-      const stateCfg = L.p3.state || {};
-      const raw = P.raw || {};
-      const ctrl = raw.ctrl || {};
-      const summary = ctrl.summary || {};
-
-      // 1) dominant + second state
-      const domKey = resolveDomKey(
-        P["p3:dom"] || P.dom || ctrl.dominant || ctrl.dominantState,
-        P.domChar,
-        P.domDesc
-      );
-
-      let secondKey = "";
-      if (ctrl.secondState) {
-        secondKey = S(ctrl.secondState).trim().charAt(0).toUpperCase();
-      } else if (P.dom2) {
-        secondKey = S(P.dom2).trim().charAt(0).toUpperCase();
-      }
-
-      if (!["C", "T", "R", "L"].includes(secondKey)) {
-        const counts =
-          P.counts ||
-          ctrl.counts ||
-          summary.counts ||
-          summary.stateFrequency ||
-          {};
-        const keys = ["C", "T", "R", "L"];
-        const ranked = keys
-          .map((k) => ({ k, n: Number(counts[k] || 0) || 0 }))
-          .sort((a, b) => b.n - a.n);
-        const bestNonDom = ranked.find((r) => r.k !== domKey && r.n > 0);
-        if (bestNonDom) secondKey = bestNonDom.k;
-      }
-
-      const absBoxes = stateCfg.absBoxes || {};
-
-      // combination key for layout.scenarios (e.g. "C_T", "C_R", etc.)
-      const comboKey =
-        domKey && secondKey && secondKey !== domKey
-          ? `${domKey}_${secondKey}`
-          : "";
-      const scenarios = stateCfg.scenarios || {};
-      const comboCfg =
-        comboKey && scenarios[comboKey] ? scenarios[comboKey] : null;
-
-      // NOTE: L-shaped shadows deliberately removed from page 3.
-      // drawShadowL is not called here.
-
-      // "YOU ARE HERE!" label
-      if (domKey && absBoxes[domKey]) {
-        const b = absBoxes[domKey];
-
-        const defaultLabelBox = {
-          x: b.x,
-          y: b.y - (stateCfg.labelOffsetTop || 18),
-          w: b.w,
-          size: stateCfg.labelSize || 12,
-          align: "center",
-        };
-
-        const labelBox =
-          comboCfg && comboCfg.label ? comboCfg.label : defaultLabelBox;
-
-        drawTextBox(p3, font, "YOU ARE HERE!", labelBox, { maxLines: 1 });
-      }
-
-      // Scenario-based images on p3
-      if (comboCfg) {
-        if (comboCfg.domImg) {
-          await embedLocalPng(
-            pdfDoc,
-            p3,
-            comboCfg.domImg,
-            "dominantstate.png"
-          );
-        }
-
-        if (comboCfg.secondImg && secondKey && secondKey !== domKey) {
-          await embedLocalPng(
-            pdfDoc,
-            p3,
-            comboCfg.secondImg,
-            "2ndstate.png"
-          );
-        }
-      }
-
-      // Exec summary + TLDR + tip
       const exec = norm(P["p3:exec"]);
       const tldrs = [
         norm(P["p3:tldr1"]),
@@ -1104,7 +888,7 @@ export default async function handler(req, res) {
       ].filter(Boolean);
       const tip = norm(P["p3:tip"]);
 
-      const blocks = [];
+      const blocks: string[] = [];
       if (exec) blocks.push(exec);
       if (tldrs.length) blocks.push(tldrs.join("\n\n"));
       if (tip) blocks.push(tip);
@@ -1144,7 +928,6 @@ export default async function handler(req, res) {
           (P.raw && P.raw.bands) ||
           {};
 
-        // hide any existing purple shape in the template under the chart
         const H = p5.getHeight();
         const { x, y, w, h } = L.p5.chart;
         p5.drawRectangle({
@@ -1155,7 +938,6 @@ export default async function handler(req, res) {
           color: rgb(1, 1, 1),
         });
 
-        // draw the dynamic QuickChart radar on top
         await embedRadarFromBands(pdfDoc, p5, L.p5.chart, bands);
       }
     }
@@ -1209,8 +991,8 @@ export default async function handler(req, res) {
 
     /* p8 — Work-with paragraphs (C/T/R/L) */
     if (p8 && Array.isArray(L.p8?.colBoxes) && L.p8.colBoxes.length >= 4) {
-      const mapIdx = { C: 0, T: 1, R: 2, L: 3 };
-      const txtByState = {
+      const mapIdx: any = { C: 0, T: 1, R: 2, L: 3 };
+      const txtByState: any = {
         C: norm(P["p8:collabC"]),
         T: norm(P["p8:collabT"]),
         R: norm(P["p8:collabR"]),
@@ -1242,13 +1024,13 @@ export default async function handler(req, res) {
 
     /* p9 — Actions + closing note */
     if (p9 && L.p11) {
-      const tidy = (s) =>
+      const tidy = (s: any) =>
         norm(String(s || ""))
           .replace(/^(?:[-–—•·]\s*)/i, "")
           .replace(/^\s*(tips?|tip)\s*:?\s*/i, "")
           .replace(/^\s*(actions?|next\s*action)\s*:?\s*/i, "")
           .trim();
-      const good = (s) =>
+      const good = (s: string) =>
         s && s.length >= 3 && !/^tips?$|^actions?$/i.test(s);
 
       const actionsPacked = [tidy(P["p9:action1"]), tidy(P["p9:action2"])]
@@ -1257,7 +1039,7 @@ export default async function handler(req, res) {
 
       const closing = tidy(P["p9:closing"]);
 
-      const drawBullet = (page, spec, text) => {
+      const drawBullet = (page: any, spec: any, text: string) => {
         if (!page || !spec || !text) return;
         const bullet = `• ${text}`;
         drawTextBox(page, font, bullet, spec, {
@@ -1275,7 +1057,7 @@ export default async function handler(req, res) {
 
     /* footer label on p2..p12 */
     const footerLabel = norm(P.name);
-    const putFooter = (page) => {
+    const putFooter = (page: any) => {
       if (!page || !footerLabel) return;
       drawTextBox(
         page,
@@ -1287,10 +1069,9 @@ export default async function handler(req, res) {
     };
     [p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12].forEach(putFooter);
 
-    // output
     const bytes = await pdfDoc.save();
 
-    const safe = (value, fallback = "") =>
+    const safe = (value: any, fallback = "") =>
       String(value || fallback)
         .trim()
         .replace(/[^A-Za-z0-9]+/g, "_")
@@ -1306,7 +1087,7 @@ export default async function handler(req, res) {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
     res.send(Buffer.from(bytes));
-  } catch (err) {
+  } catch (err: any) {
     console.error("PDF handler error:", err);
     res.status(500).json({
       error: "Failed to generate PDF",
