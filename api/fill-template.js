@@ -35,8 +35,12 @@ const rectTLtoBL = (page, box, inset = 0) => {
   const pageH = page.getHeight();
   const x = N(box.x) + inset;
   const w = Math.max(0, N(box.w) - inset * 2);
-  const h = Math.max(0, N(box.h) - inset * 2);
-  const y = pageH - N(box.y) - N(box.h) + inset;
+
+  // IMPORTANT: use the SAME height value for both h and y-calc
+  const hRaw = N(box.h || 400);
+  const h = Math.max(0, hRaw - inset * 2);
+
+  const y = pageH - N(box.y) - hRaw + inset;
   return { x, y, w, h };
 };
 
@@ -52,7 +56,7 @@ function drawTextBox(page, font, text, box, opts = {}) {
   const maxLines = N(opts.maxLines || box.maxLines || 999);
   const align = opts.align || box.align || "left";
 
-  // Split words but keep intentional newlines by using a sentinel
+  // Split words but keep intentional newlines
   const paragraphs = String(t0).split("\n");
   const lines = [];
 
@@ -74,11 +78,9 @@ function drawTextBox(page, font, text, box, opts = {}) {
     if (lines.length >= maxLines) break;
     if (line) lines.push(line);
 
-    // paragraph gap (blank line) if room
     if (lines.length < maxLines) lines.push("");
   }
 
-  // Remove trailing blank line
   while (lines.length && lines[lines.length - 1] === "") lines.pop();
 
   const clipped = lines.slice(0, maxLines);
@@ -103,7 +105,6 @@ async function loadTemplateBytesLocal(fname) {
   const __file = fileURLToPath(import.meta.url);
   const __dir = path.dirname(__file);
 
-  // Vercel serverless root typically /var/task
   const candidates = [
     path.join(process.cwd(), "public", fname),
     path.join(__dir, "..", "public", fname),
@@ -176,7 +177,6 @@ function computeDomAndSecondKeys(P) {
     resolveStateKey(ctrl.domState) ||
     "R";
 
-  // Try totals if present
   const totals =
     summary.ctrlTotals ||
     summary.totals ||
@@ -267,7 +267,6 @@ async function embedRemoteImage(pdfDoc, url) {
   if (sig.startsWith("\x89PNG")) return await pdfDoc.embedPng(buf);
   if (sig.startsWith("\xff\xd8")) return await pdfDoc.embedJpg(buf);
 
-  // fallback
   try {
     return await pdfDoc.embedPng(buf);
   } catch {
@@ -287,16 +286,6 @@ async function embedRadarFromBands(pdfDoc, page, box, bandsRaw) {
 
   const H = page.getHeight();
   const { x, y, w, h } = box;
-
-  // wipe artefact behind chart if needed
-  page.drawRectangle({
-    x,
-    y: H - y - h,
-    width: w,
-    height: h,
-    color: rgb(1, 1, 1),
-    opacity: 0, // transparent (acts as a no-op in most PDFs but harmless)
-  });
 
   page.drawImage(img, { x, y: H - y - h, width: w, height: h });
 }
@@ -339,7 +328,6 @@ function mergeLayout(overrides = null) {
     }
   }
 
-  // allow top-level overrides if you ever add them
   for (const k of Object.keys(ov)) {
     if (k === "pages") continue;
     out[k] = ov[k];
@@ -433,7 +421,6 @@ export default async function handler(req, res) {
     const payload = await readPayload(req);
     const P = normaliseInput(payload);
 
-    // Select correct template among the 12
     const { domKey, secondKey } = computeDomAndSecondKeys(P);
     const combo = `${domKey}${secondKey}`;
 
@@ -441,21 +428,21 @@ export default async function handler(req, res) {
     const safeCombo = validCombos.has(combo) ? combo : "CT";
     const tpl = `CTRL_PoC_Assessment_Profile_template_${safeCombo}.pdf`;
 
-    // Load PDF
     const pdfBytes = await loadTemplateBytesLocal(tpl);
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    // Layout
     const layout = mergeLayout(P.layout);
-    const L = layout.pages || DEFAULT_LAYOUT.pages;
+    const L = (layout && layout.pages) ? layout.pages : DEFAULT_LAYOUT.pages;
 
     const pages = pdfDoc.getPages();
-    const p1 = pages[0];
-    const p3 = pages[2];
-    const p4 = pages[3];
-    const p5 = pages[4];
-    const p6 = pages[5];
+
+    // SAFETY: do not assume page count
+    const p1 = pages[0] || null;
+    const p3 = pages[2] || null;
+    const p4 = pages[3] || null;
+    const p5 = pages[4] || null;
+    const p6 = pages[5] || null;
 
     /* p1: name + date */
     if (p1 && L.p1) {
@@ -463,7 +450,7 @@ export default async function handler(req, res) {
       if (L.p1.date && P["p1:d"]) drawTextBox(p1, font, P["p1:d"], L.p1.date, { maxLines: 1 });
     }
 
-    /* p3: TLDR → main → action (your existing pattern) */
+    /* p3: TLDR → main → action */
     if (p3 && L.p3?.domDesc) {
       const exec = norm(P["p3:exec"]);
       const tldrs = [P["p3:tldr1"],P["p3:tldr2"],P["p3:tldr3"],P["p3:tldr4"],P["p3:tldr5"]]
@@ -492,7 +479,11 @@ export default async function handler(req, res) {
         drawTextBox(p5, font, body, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
       }
       if (L.p5.chart) {
-        await embedRadarFromBands(pdfDoc, p5, L.p5.chart, P.bands || {});
+        try {
+          await embedRadarFromBands(pdfDoc, p5, L.p5.chart, P.bands || {});
+        } catch (e) {
+          console.warn("[fill-template] Radar chart skipped:", e?.message || String(e));
+        }
       }
     }
 
@@ -508,7 +499,6 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store");
     res.status(200).send(Buffer.from(outBytes));
   } catch (err) {
-    // Make sure you get REAL error details, not generic Vercel “crashed”
     console.error("[fill-template] CRASH", err);
     res.status(500).json({
       ok: false,
