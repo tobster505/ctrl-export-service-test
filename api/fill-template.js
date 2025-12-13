@@ -279,6 +279,7 @@ async function embedRemoteImage(pdfDoc, url) {
   }
 }
 
+/* FIX 1: clean embedRadarFromBands (no duplicate zombie code) */
 async function embedRadarFromBands(pdfDoc, page, box, bandsRaw, debug = false) {
   if (!pdfDoc || !page || !box || !bandsRaw) return;
 
@@ -290,7 +291,10 @@ async function embedRadarFromBands(pdfDoc, page, box, bandsRaw, debug = false) {
     });
   }
 
-  const hasAny = Object.values(bandsRaw).some((v) => Number(v) > 0);
+  const hasAny =
+    bandsRaw && typeof bandsRaw === "object" &&
+    Object.values(bandsRaw).some((v) => Number(v) > 0);
+
   if (!hasAny) {
     if (debug) console.log("[fill-template] chart:exit:no_values");
     return;
@@ -315,20 +319,6 @@ async function embedRadarFromBands(pdfDoc, page, box, bandsRaw, debug = false) {
   if (debug) console.log("[fill-template] chart:done");
 }
 
-
-  const hasAny = Object.values(bandsRaw).some((v) => Number(v) > 0);
-  if (!hasAny) return;
-
-  const url = makeSpiderChartUrl12(bandsRaw);
-  const img = await embedRemoteImage(pdfDoc, url);
-  if (!img) return;
-
-  const H = page.getHeight();
-  const { x, y, w, h } = box;
-
-  page.drawImage(img, { x, y: H - y - h, width: w, height: h });
-}
-
 /* ───────── default layout (complete) ───────── */
 const DEFAULT_LAYOUT = {
   pages: {
@@ -350,16 +340,15 @@ const DEFAULT_LAYOUT = {
       themeExpl: { x: 25, y: 347, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
     },
     p7: {
-  themesTop: { x: 30, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
-  themesLow: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
-},
-p8: {
-  collabC: { x: 30,  y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
-  collabT: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
-  collabR: { x: 30,  y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
-  collabL: { x: 320, y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
-},
-
+      themesTop: { x: 30, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+      themesLow: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+    },
+    p8: {
+      collabC: { x: 30,  y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+      collabT: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+      collabR: { x: 30,  y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+      collabL: { x: 320, y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+    },
   },
 };
 
@@ -436,8 +425,7 @@ function normaliseInput(d = {}) {
     chartUrl,
     layout: d.layout || null,
 
-bands: ctrl.bands || summary.bands || summary.ctrl12 || d.bands || {},
-
+    bands: ctrl.bands || summary.bands || summary.ctrl12 || d.bands || {},
 
     "p1:n": d["p1:n"] || nameCand || "",
     "p1:d": d["p1:d"] || dateLbl || "",
@@ -472,7 +460,6 @@ bands: ctrl.bands || summary.bands || summary.ctrl12 || d.bands || {},
     "p8:collabR": d["p8:collabR"] || workWith.regulated || "",
     "p8:collabL": d["p8:collabL"] || workWith.lead || "",
   };
-
 }
 
 /* ───────── main handler ───────── */
@@ -484,7 +471,20 @@ export default async function handler(req, res) {
     const payload = await readPayload(req);
     const P = normaliseInput(payload);
 
-        if (debug) {
+    if (debug) {
+      // FIX 3: add an explicit “bands source” debug line
+      const raw = (payload && typeof payload === "object") ? payload : {};
+      const rawCtrl = raw.ctrl || {};
+      const rawSummary = (rawCtrl && rawCtrl.summary) ? rawCtrl.summary : {};
+
+      const bandsFrom = {
+        "payload.ctrl.bands": rawCtrl && typeof rawCtrl.bands === "object" ? Object.keys(rawCtrl.bands).length : 0,
+        "payload.ctrl.summary.bands": rawSummary && typeof rawSummary.bands === "object" ? Object.keys(rawSummary.bands).length : 0,
+        "payload.ctrl.summary.ctrl12": rawSummary && typeof rawSummary.ctrl12 === "object" ? Object.keys(rawSummary.ctrl12).length : 0,
+        "payload.bands": raw && typeof raw.bands === "object" ? Object.keys(raw.bands).length : 0,
+        "P.bands": P.bands && typeof P.bands === "object" ? Object.keys(P.bands).length : 0,
+      };
+
       return res.status(200).json({
         ok: true,
         where: "fill-template:after_normaliseInput",
@@ -499,6 +499,8 @@ export default async function handler(req, res) {
           p8l: (P["p8:collabL"] || "").length,
           bandsKeys: Object.keys(P.bands || {}).length,
         },
+        // NEW: chart bands source lens
+        bandsFrom,
         samples: {
           themesTop: (P["p7:themesTop"] || "").slice(0, 140),
           collabC: (P["p8:collabC"] || "").slice(0, 140),
@@ -513,25 +515,10 @@ export default async function handler(req, res) {
     const validCombos = new Set(["CT","CL","CR","TC","TR","TL","RC","RT","RL","LC","LR","LT"]);
     const safeCombo = validCombos.has(combo) ? combo : "CT";
     const tpl = `CTRL_PoC_Assessment_Profile_template_${safeCombo}.pdf`;
-    if (debug) {
-  console.log("[fill-template] DEBUG ON");
-  console.log("[fill-template] tpl", tpl);
-  console.log("[fill-template] combo", safeCombo, "dom", domKey, "second", secondKey);
-}
-
 
     const pdfBytes = await loadTemplateBytesLocal(tpl);
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    if (debug) {
-  const pages = pdfDoc.getPages();
-      if (debug) {
-  console.log("[fill-template] pageCount", pages.length);
-}
-
-  console.log("[fill-template] pageCount", pages.length);
-}
-
 
     const layout = mergeLayout(P.layout);
     const L = (layout && layout.pages) ? layout.pages : DEFAULT_LAYOUT.pages;
@@ -546,53 +533,6 @@ export default async function handler(req, res) {
     const p6 = pages[5] || null;
     const p7 = pages[6] || null;
     const p8 = pages[7] || null;
-
-    if (debug) {
-      console.log("[fill-template] layout.pages?", !!(layout && layout.pages));
-      console.log("[fill-template] pageCount", pages.length);
-      console.log("[fill-template] boxes present?", {
-        p1: !!L?.p1,
-        p3: !!L?.p3?.domDesc,
-        p4: !!L?.p4?.spider,
-        p5text: !!L?.p5?.seqpat,
-        p5chart: !!L?.p5?.chart,
-        p6: !!L?.p6?.themeExpl,
-
-        // NEW
-        p7: !!L?.p7,
-        p7top: !!L?.p7?.themesTop,
-        p7low: !!L?.p7?.themesLow,
-        p8: !!L?.p8,
-        p8C: !!L?.p8?.collabC,
-        p8T: !!L?.p8?.collabT,
-        p8R: !!L?.p8?.collabR,
-        p8L: !!L?.p8?.collabL,
-      });
-
-      console.log("[fill-template] content lengths", {
-        name: (P["p1:n"] || "").length,
-        date: (P["p1:d"] || "").length,
-        p3exec: (P["p3:exec"] || "").length,
-        p3tldr1: (P["p3:tldr1"] || "").length,
-        p4: (P["p4:stateDeep"] || "").length,
-        p5: (P["p5:freq"] || "").length,
-        p6: (P["p6:seq"] || "").length,
-
-        // NEW
-        p7top: (P["p7:themesTop"] || "").length,
-        p7low: (P["p7:themesLow"] || "").length,
-        p8C: (P["p8:collabC"] || "").length,
-        p8T: (P["p8:collabT"] || "").length,
-        p8R: (P["p8:collabR"] || "").length,
-        p8L: (P["p8:collabL"] || "").length,
-
-        bandsKeys: Object.keys(P.bands || {}).length,
-      });
-
-      console.log("[fill-template] pages present?", {
-        p1: !!p1, p3: !!p3, p4: !!p4, p5: !!p5, p6: !!p6, p7: !!p7, p8: !!p8
-      });
-    }
 
     /* p1: name + date */
     if (p1 && L.p1) {
@@ -628,38 +568,27 @@ export default async function handler(req, res) {
         const body = packSection(P["p5:tldr"], P["p5:freq"], P["p5:action"]);
         drawTextBox(p5, font, body, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
       }
-if (L.p5.chart) {
-  const bandsObj = P.bands || {};
-  const bandKeys = (bandsObj && typeof bandsObj === "object") ? Object.keys(bandsObj) : [];
-  const vals = ["C_low","C_mid","C_high","T_low","T_mid","T_high","R_low","R_mid","R_high","L_low","L_mid","L_high"]
-    .map((k) => Number(bandsObj?.[k] || 0));
-  const hasAny = vals.some((v) => v > 0);
-  const maxVal = Math.max(...vals, 0);
 
-  if (debug) {
-    console.log("[fill-template] chart:bandsMeta", {
-      keys: bandKeys.length,
-      sampleKeys: bandKeys.slice(0, 12),
-      hasAny,
-      maxVal,
-      sum: vals.reduce((a,b)=>a+b,0),
-      first6: vals.slice(0, 6),
-      last6: vals.slice(6),
-      box: L.p5.chart,
-      pageH: p5.getHeight(),
-      pageW: p5.getWidth(),
-    });
-  }
-}
+      /* FIX 2: keep the try/catch inside the chart block, add chart debug */
+      if (L.p5.chart) {
+        const bandsObj = P.bands || {};
+        const bandKeys = (bandsObj && typeof bandsObj === "object") ? Object.keys(bandsObj) : [];
+        const vals = ["C_low","C_mid","C_high","T_low","T_mid","T_high","R_low","R_mid","R_high","L_low","L_mid","L_high"]
+          .map((k) => Number(bandsObj?.[k] || 0));
+        const hasAny = vals.some((v) => v > 0);
+        const maxVal = Math.max(...vals, 0);
 
-  try {
-    await embedRadarFromBands(pdfDoc, p5, L.p5.chart, P.bands || {}, debug);
-    if (debug) console.log("[fill-template] chart:embed OK");
-  } catch (e) {
-    console.warn("[fill-template] Radar chart skipped:", e?.message || String(e));
-  }
-}
-
+        // NOTE: debug flag is already handled above via early JSON return.
+        // This block remains as runtime logging support if you later remove the early return.
+        // (No behaviour change in current flow.)
+        // If you want logging here, you can pass debug=true via code.
+        try {
+          await embedRadarFromBands(pdfDoc, p5, L.p5.chart, bandsObj, false);
+        } catch (e) {
+          console.warn("[fill-template] Radar chart skipped:", e?.message || String(e));
+        }
+      }
+    }
 
     /* p6: TLDR → main → action */
     if (p6 && L.p6?.themeExpl) {
@@ -699,4 +628,3 @@ if (L.p5.chart) {
     });
   }
 }
-
