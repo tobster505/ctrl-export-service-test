@@ -326,31 +326,50 @@ const DEFAULT_LAYOUT = {
       name: { x: 7, y: 473, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
       date: { x: 210, y: 600, w: 500, h: 40, size: 25, align: "left", maxLines: 1 },
     },
-    p3: {
+
+    // Header name on pages 2–10 (used by handler loop)
+    p2:  { hdrName: { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 } },
+
+    p3:  {
+      hdrName: { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 },
       domDesc: { x: 25, y: 685, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
     },
-    p4: {
-      spider: { x: 25, y: 347, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
+
+    p4:  {
+      hdrName: { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 },
+      spider:  { x: 25, y: 347, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
     },
-    p5: {
-      seqpat: { x: 25, y: 347, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
-      chart: { x: 48, y: 462, w: 500, h: 300 },
+
+    p5:  {
+      hdrName: { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 },
+      seqpat:  { x: 25, y: 347, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
+      chart:   { x: 48, y: 462, w: 500, h: 300 },
     },
-    p6: {
+
+    p6:  {
+      hdrName:   { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 },
       themeExpl: { x: 25, y: 347, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
     },
-    p7: {
-      themesTop: { x: 30, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+
+    p7:  {
+      hdrName:   { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 },
+      themesTop: { x: 30,  y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
       themesLow: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
     },
-    p8: {
+
+    p8:  {
+      hdrName: { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 },
       collabC: { x: 30,  y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
       collabT: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
       collabR: { x: 30,  y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
       collabL: { x: 320, y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
     },
+
+    p9:  { hdrName: { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 } },
+    p10: { hdrName: { x: 30, y: 55, w: 560, h: 30, size: 16, align: "left", maxLines: 1 } },
   },
 };
+
 
 /* deep merge override into default */
 function mergeLayout(overrides = null) {
