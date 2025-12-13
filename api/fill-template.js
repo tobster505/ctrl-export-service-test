@@ -433,6 +433,21 @@ function normaliseInput(d = {}) {
 
   const chartUrl = d.chartUrl || chart.url || d["p5:chart"] || "";
 
+  // ✅ CHART FIX ONLY:
+  // Prefer the first NON-EMPTY bands object.
+  // (Because {} is "truthy", your old `ctrl.bands || summary.ctrl12` never reached ctrl12.)
+  const ctrlBands = (ctrl.bands && typeof ctrl.bands === "object") ? ctrl.bands : null;
+  const sumBands  = (summary.bands && typeof summary.bands === "object") ? summary.bands : null;
+  const ctrl12    = (summary.ctrl12 && typeof summary.ctrl12 === "object") ? summary.ctrl12 : null;
+  const rootBands = (d.bands && typeof d.bands === "object") ? d.bands : null;
+
+  const bandsRaw =
+    (ctrlBands && Object.keys(ctrlBands).length ? ctrlBands : null) ||
+    (sumBands  && Object.keys(sumBands).length  ? sumBands  : null) ||
+    (ctrl12    && Object.keys(ctrl12).length    ? ctrl12    : null) ||
+    (rootBands && Object.keys(rootBands).length ? rootBands : null) ||
+    {};
+
   return {
     raw: d,
     identity,
@@ -443,7 +458,8 @@ function normaliseInput(d = {}) {
     chartUrl,
     layout: d.layout || null,
 
-    bands: ctrl.bands || summary.bands || summary.ctrl12 || d.bands || {},
+    // ✅ CHART FIX ONLY:
+    bands: bandsRaw,
 
     "p1:n": d["p1:n"] || nameCand || "",
     "p1:d": d["p1:d"] || dateLbl || "",
@@ -479,6 +495,7 @@ function normaliseInput(d = {}) {
     "p8:collabL": d["p8:collabL"] || workWith.lead || "",
   };
 }
+
 
 /* ───────── main handler ───────── */
 export default async function handler(req, res) {
