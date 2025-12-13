@@ -16,11 +16,8 @@ const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const norm = (s) => S(s).replace(/\s+/g, " ").trim();
 
 function safeJson(obj) {
-  try {
-    return JSON.parse(JSON.stringify(obj));
-  } catch {
-    return { _error: "Could not serialise debug object" };
-  }
+  try { return JSON.parse(JSON.stringify(obj)); }
+  catch { return { _error: "Could not serialise debug object" }; }
 }
 
 /** TLDR → main → action packer */
@@ -141,7 +138,7 @@ async function readPayload(req) {
     const raw = Buffer.concat(chunks).toString("utf8") || "{}";
     try {
       return JSON.parse(raw);
-    } catch {
+    } catch (e) {
       return {};
     }
   }
@@ -153,7 +150,7 @@ async function readPayload(req) {
   try {
     const raw = Buffer.from(dataB64, "base64").toString("utf8");
     return JSON.parse(raw);
-  } catch {
+  } catch (e) {
     return {};
   }
 }
@@ -403,6 +400,7 @@ function normaliseInput(d = {}) {
   const summary = ctrl.summary || {};
   const text = d.text || {};
   const workWith = d.workWith || {};
+  const actionsObj = d.actions || {};
   const chart = d.chart || {};
 
   const nameCand =
@@ -445,7 +443,6 @@ function normaliseInput(d = {}) {
     chartUrl,
     layout: d.layout || null,
 
-    // bands resolution (unchanged intent; just includes ctrl12 fallback you were using)
     bands: ctrl.bands || summary.bands || summary.ctrl12 || d.bands || {},
 
     "p1:n": d["p1:n"] || nameCand || "",
@@ -493,7 +490,7 @@ export default async function handler(req, res) {
     const P = normaliseInput(payload);
 
     if (debug) {
-      // FIX 3: explicit “bands source” debug line
+      // FIX 3: add an explicit “bands source” debug line
       const raw = (payload && typeof payload === "object") ? payload : {};
       const rawCtrl = raw.ctrl || {};
       const rawSummary = (rawCtrl && rawCtrl.summary) ? rawCtrl.summary : {};
@@ -520,6 +517,7 @@ export default async function handler(req, res) {
           p8l: (P["p8:collabL"] || "").length,
           bandsKeys: Object.keys(P.bands || {}).length,
         },
+        // NEW: chart bands source lens
         bandsFrom,
         samples: {
           themesTop: (P["p7:themesTop"] || "").slice(0, 140),
@@ -545,6 +543,16 @@ export default async function handler(req, res) {
 
     const pages = pdfDoc.getPages();
 
+    // --- Header name on pages 2–10 (index 1+) ---
+    const headerName = norm(P["p1:n"]);
+    if (headerName) {
+      for (let i = 1; i < pages.length; i++) {
+        const pageKey = `p${i + 1}`; // page index 1 => p2
+        const box = L?.[pageKey]?.hdrName;
+        if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: box.maxLines || 1 });
+      }
+    }
+
     // SAFETY: do not assume page count
     const p1 = pages[0] || null;
     const p3 = pages[2] || null;
@@ -560,7 +568,7 @@ export default async function handler(req, res) {
       if (L.p1.date && P["p1:d"]) drawTextBox(p1, font, P["p1:d"], L.p1.date, { maxLines: 1 });
     }
 
-    /* p3: TLDR → main → action */
+    /* p3: TLDR → main → action (already TLDR-first) */
     if (p3 && L.p3?.domDesc) {
       const exec = norm(P["p3:exec"]);
       const tldrs = [P["p3:tldr1"], P["p3:tldr2"], P["p3:tldr3"], P["p3:tldr4"], P["p3:tldr5"]]
@@ -576,20 +584,24 @@ export default async function handler(req, res) {
       drawTextBox(p3, font, blocks.join("\n\n\n"), L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
     }
 
-    /* p4: TLDR → main → action */
+    /* p4: TLDR → main → action (TLDR-first via packSection) */
     if (p4 && L.p4?.spider) {
       const body = packSection(P["p4:tldr"], P["p4:stateDeep"], P["p4:action"]);
       drawTextBox(p4, font, body, L.p4.spider, { maxLines: L.p4.spider.maxLines });
     }
 
-    /* p5: TLDR → main → action + chart */
+    /* p5: TLDR → main → action + chart
+       CHANGE 1 (chart): draw ALL text first, then draw chart LAST on p5.
+       CHANGE 2 (TLDR): packSection already enforces TLDR-first.
+    */
     if (p5 && L.p5) {
+      // p5 text FIRST
       if (L.p5.seqpat) {
         const body = packSection(P["p5:tldr"], P["p5:freq"], P["p5:action"]);
         drawTextBox(p5, font, body, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
       }
 
-      /* FIX 2: keep try/catch inside chart block + chart debug line */
+      // p5 chart LAST
       if (L.p5.chart) {
         const bandsObj = P.bands || {};
         const bandKeys = (bandsObj && typeof bandsObj === "object") ? Object.keys(bandsObj) : [];
@@ -599,30 +611,29 @@ export default async function handler(req, res) {
         const maxVal = Math.max(...vals, 0);
         const sumVal = vals.reduce((a, b) => a + b, 0);
 
-        if (debug) {
-          console.log("[fill-template] chart:bandsMeta", {
-            keys: bandKeys.length,
-            sampleKeys: bandKeys.slice(0, 12),
-            hasAny,
-            maxVal,
-            sum: sumVal,
-            first6: vals.slice(0, 6),
-            last6: vals.slice(6),
-            box: L.p5.chart,
-            pageH: p5.getHeight(),
-            pageW: p5.getWidth(),
-          });
-        }
+        // 2nd debug line regarding the chart (runtime logging)
+        console.log("[fill-template] chart:bandsMeta", {
+          keys: bandKeys.length,
+          sampleKeys: bandKeys.slice(0, 12),
+          hasAny,
+          maxVal,
+          sum: sumVal,
+          first6: vals.slice(0, 6),
+          last6: vals.slice(6),
+          box: L.p5.chart,
+          pageH: p5.getHeight(),
+          pageW: p5.getWidth(),
+        });
 
         try {
-          await embedRadarFromBands(pdfDoc, p5, L.p5.chart, bandsObj, debug);
+          await embedRadarFromBands(pdfDoc, p5, L.p5.chart, bandsObj, false);
         } catch (e) {
           console.warn("[fill-template] Radar chart skipped:", e?.message || String(e));
         }
       }
     }
 
-    /* p6: TLDR → main → action */
+    /* p6: TLDR → main → action (TLDR-first via packSection) */
     if (p6 && L.p6?.themeExpl) {
       const body = packSection(P["p6:tldr"], P["p6:seq"], P["p6:action"]);
       drawTextBox(p6, font, body, L.p6.themeExpl, { maxLines: L.p6.themeExpl.maxLines });
@@ -644,17 +655,6 @@ export default async function handler(req, res) {
       if (L.p8.collabT && P["p8:collabT"]) drawTextBox(p8, font, P["p8:collabT"], L.p8.collabT, { maxLines: L.p8.collabT.maxLines });
       if (L.p8.collabR && P["p8:collabR"]) drawTextBox(p8, font, P["p8:collabR"], L.p8.collabR, { maxLines: L.p8.collabR.maxLines });
       if (L.p8.collabL && P["p8:collabL"]) drawTextBox(p8, font, P["p8:collabL"], L.p8.collabL, { maxLines: L.p8.collabL.maxLines });
-    }
-
-    // --- Header name on pages 2–10 (index 1+) ---
-    // IMPORTANT: draw LAST so it sits on top (prevents being painted over)
-    const headerName = norm(P["p1:n"]);
-    if (headerName) {
-      for (let i = 1; i < pages.length; i++) {
-        const pageKey = `p${i + 1}`; // page index 1 => p2
-        const box = L?.[pageKey]?.hdrName;
-        if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: box.maxLines || 1 });
-      }
     }
 
     const outBytes = await pdfDoc.save();
