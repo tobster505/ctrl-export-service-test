@@ -418,6 +418,9 @@ function normaliseInput(d = {}) {
 /* ───────── main handler ───────── */
 export default async function handler(req, res) {
   try {
+    const url = new URL(req.url, "http://localhost");
+    const debug = url.searchParams.get("debug") === "1";
+
     const payload = await readPayload(req);
     const P = normaliseInput(payload);
 
@@ -427,13 +430,47 @@ export default async function handler(req, res) {
     const validCombos = new Set(["CT","CL","CR","TC","TR","TL","RC","RT","RL","LC","LR","LT"]);
     const safeCombo = validCombos.has(combo) ? combo : "CT";
     const tpl = `CTRL_PoC_Assessment_Profile_template_${safeCombo}.pdf`;
+    if (debug) {
+  console.log("[fill-template] DEBUG ON");
+  console.log("[fill-template] tpl", tpl);
+  console.log("[fill-template] combo", safeCombo, "dom", domKey, "second", secondKey);
+}
+
 
     const pdfBytes = await loadTemplateBytesLocal(tpl);
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    if (debug) {
+  const pages = pdfDoc.getPages();
+  console.log("[fill-template] pageCount", pages.length);
+}
+
 
     const layout = mergeLayout(P.layout);
     const L = (layout && layout.pages) ? layout.pages : DEFAULT_LAYOUT.pages;
+    if (debug) {
+  console.log("[fill-template] layout.pages?", !!(layout && layout.pages));
+  console.log("[fill-template] boxes present?", {
+    p1: !!L?.p1,
+    p3: !!L?.p3?.domDesc,
+    p4: !!L?.p4?.spider,
+    p5text: !!L?.p5?.seqpat,
+    p5chart: !!L?.p5?.chart,
+    p6: !!L?.p6?.themeExpl,
+  });
+
+  console.log("[fill-template] content lengths", {
+    name: (P["p1:n"] || "").length,
+    date: (P["p1:d"] || "").length,
+    p3exec: (P["p3:exec"] || "").length,
+    p3tldr1: (P["p3:tldr1"] || "").length,
+    p4: (P["p4:stateDeep"] || "").length,
+    p5: (P["p5:freq"] || "").length,
+    p6: (P["p6:seq"] || "").length,
+    bandsKeys: Object.keys(P.bands || {}).length,
+  });
+}
+
 
     const pages = pdfDoc.getPages();
 
