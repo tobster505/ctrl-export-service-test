@@ -315,6 +315,17 @@ const DEFAULT_LAYOUT = {
     p6: {
       themeExpl: { x: 25, y: 347, w: 550, h: 420, size: 18, align: "left", maxLines: 20 },
     },
+    p7: {
+  themesTop: { x: 30, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+  themesLow: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+},
+p8: {
+  collabC: { x: 30,  y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+  collabT: { x: 320, y: 530, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+  collabR: { x: 30,  y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+  collabL: { x: 320, y: 960, w: 300, h: 420, size: 17, align: "left", maxLines: 12 },
+},
+
   },
 };
 
@@ -391,7 +402,8 @@ function normaliseInput(d = {}) {
     chartUrl,
     layout: d.layout || null,
 
-    bands: ctrl.bands || summary.bands || d.bands || {},
+bands: ctrl.bands || summary.bands || summary.ctrl12 || d.bands || {},
+
 
     "p1:n": d["p1:n"] || nameCand || "",
     "p1:d": d["p1:d"] || dateLbl || "",
@@ -479,6 +491,10 @@ export default async function handler(req, res) {
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     if (debug) {
   const pages = pdfDoc.getPages();
+      if (debug) {
+  console.log("[fill-template] pageCount", pages.length);
+}
+
   console.log("[fill-template] pageCount", pages.length);
 }
 
