@@ -1,184 +1,312 @@
-// V4 (Chart-only changes added)
-/**
- * CTRL PoC Export Service · fill-template (Starter/PoC flow)
- * Place at: /api/fill-template.js  (ctrl-poc-service)
- */
+// === CTRL PoC fill-template — V5 ===
+// Changes vs V4 (targeted):
+// 1) URL layout overrides now support BOTH styles:
+//    - L_p1_name_x=45 (recommended)
+//    - p1_namex=45 or p1_name_x=45 (legacy)
+//    Applied/ignored overrides are echoed when ?debug=1
+// 2) Packed narrative blocks now add safe section titles with simple hyphen underlines
+//    (avoids WinAnsi errors from box-drawing characters like '─').
+// 3) Extra text sanitisation to avoid WinAnsi-encoding crashes.
+//
+// IMPORTANT: Keep the rest of the rendering logic and payload mapping the same.
+
 export const config = { runtime: "nodejs" };
 
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import { PDFDocument, StandardFonts } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
 
-/* ───────────── utilities ───────────── */
-const S = (v, fb = "") => (v == null ? String(fb) : String(v));
-const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
-const norm = (s) => S(s).replace(/\s+/g, " ").trim();
+/* ───────── basics ───────── */
 
-function safeJson(obj) {
-  try { return JSON.parse(JSON.stringify(obj)); }
-  catch { return {}; }
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
+
+const TEMPLATE_PREFIX = "CTRL_PoC_Assessment_Profile_template_";
+const TEMPLATE_SUFFIX = ".pdf";
+const VALID_TEMPLATE_KEYS = new Set([
+  "CT","CR","CL",
+  "TC","TR","TL",
+  "RC","RT","RL",
+  "LC","LT","LR",
+]);
+
+/* ───────── layout ───────── */
+
+const DEFAULT_LAYOUT = {
+  v: 5,
+  pages: {
+    p1: {
+      name: { x: 7, y: 473, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
+      date: { x: 210, y: 600, w: 500, h: 40, size: 25, align: "left", maxLines: 1 },
+    },
+
+    // p2–p10 header name (if pages exist)
+    p2: { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p3: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      domDesc: { x: 25, y: 200, w: 550, h: 900, size: 18, align: "left", maxLines: 38 },
+    },
+    p4: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      spider: { x: 25, y: 200, w: 550, h: 900, size: 18, align: "left", maxLines: 38 },
+    },
+    p5: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      seqpat: { x: 25, y: 200, w: 550, h: 900, size: 18, align: "left", maxLines: 38 },
+      chart: { x: 48, y: 462, w: 500, h: 300 },
+    },
+    p6: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      themeExpl: { x: 25, y: 200, w: 550, h: 900, size: 18, align: "left", maxLines: 38 },
+    },
+    p7: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      themesTop: { x: 30, y: 200, w: 590, h: 900, size: 17, align: "left", maxLines: 42 },
+      themesLow: { x: 320, y: 200, w: 300, h: 900, size: 17, align: "left", maxLines: 28 },
+    },
+    p8: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      collabC: { x: 30, y: 200, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+      collabT: { x: 320, y: 200, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+      collabR: { x: 30, y: 650, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+      collabL: { x: 320, y: 650, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+    },
+    p9: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      actAnchor: { x: 25, y: 200, w: 550, h: 220, size: 20, align: "left", maxLines: 8 },
+    },
+    // p10: keep header override-ready if your template has 10 pages
+    p10: { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+  },
+};
+
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj));
 }
 
-function isObj(o) { return o && typeof o === "object" && !Array.isArray(o); }
-
-function getDeep(o, pathArr, fb) {
-  try {
-    let cur = o;
-    for (const k of pathArr) cur = cur?.[k];
-    return cur == null ? fb : cur;
-  } catch { return fb; }
-}
-
-function asText(s) {
-  const t = norm(s);
-  return t;
-}
-
-// Safe underline: use "-" only (WinAnsi safe)
-function underlineLine(title) {
-  const t = norm(title || "");
-  const len = Math.max(6, Math.min(32, t.length));
-  return "-".repeat(len); // ASCII-safe for WinAnsi
-}
-
-
-// Convert "A • B • C" OR "A || B || C" OR newline lists into bullet lines
-function toBulletLines(raw) {
-  const s = S(raw, "").replace(/\r/g, "").trim();
-  if (!s) return "";
-
-  // Prefer explicit separators commonly produced by Gen cards
-  let parts = [];
-  if (s.includes(" • ")) parts = s.split(" • ");
-  else if (s.includes("||")) parts = s.split("||");
-  else if (s.includes("\n")) parts = s.split("\n");
-  else {
-    // Fallback: sentence-ish split
-    parts = s.split(/(?<=\.)\s+/);
-  }
-
-  const cleaned = parts
-    .map(p => norm(p).replace(/^[-•\u2022]\s*/, ""))
-    .filter(Boolean);
-
-  if (!cleaned.length) return "";
-
-  return cleaned.map(p => `• ${p}`).join("\n");
-}
-
-// Merge layout objects shallowly at pages level
-function mergeLayout(override) {
-  const base = safeJson(DEFAULT_LAYOUT);
-  if (!isObj(override)) return base;
-
-  const out = safeJson(base);
-  out.pages = out.pages || {};
-  const op = override.pages || override; // allow passing {p3:{...}} directly
-
-  for (const [k, v] of Object.entries(op || {})) {
-    if (!isObj(v)) continue;
-    out.pages[k] = { ...(out.pages[k] || {}), ...v };
+function mergeLayout(base, override) {
+  const out = deepClone(base);
+  if (!override || typeof override !== "object") return out;
+  if (override.v != null) out.v = override.v;
+  if (override.pages && typeof override.pages === "object") {
+    out.pages = out.pages || {};
+    for (const [pk, pv] of Object.entries(override.pages)) {
+      out.pages[pk] = out.pages[pk] || {};
+      if (pv && typeof pv === "object") {
+        for (const [bk, bv] of Object.entries(pv)) {
+          out.pages[pk][bk] = { ...(out.pages[pk][bk] || {}), ...(bv || {}) };
+        }
+      }
+    }
   }
   return out;
 }
 
-/* ───────────── drawing helpers ───────────── */
+/* ───────── URL layout overrides (V5) ───────── */
 
-function drawTextBox(page, font, text, box, opts = {}) {
-  if (!text) return;
+// Supported param styles:
+//
+// 1) L_p1_name_x=45   (recommended)
+// 2) p1_name_x=45     (legacy-alt)
+// 3) p1_namex=45      (legacy)
+//
+// Notes:
+// - pageKey must be like p1..p10 (string)
+// - boxKey must match the layout box name (e.g. name, date, domDesc, seqpat, chart)
+// - prop is x|y|w|h|size|maxLines|align|... any key in the box object
+//
+function parseLayoutParamKey(key) {
+  if (!key || typeof key !== "string") return null;
 
-  const x = N(box.x);
-  const y = N(box.y);
-  const w = N(box.w);
-  const h = N(box.h);
-  const size = N(box.size || opts.size || 12);
-  const align = (box.align || opts.align || "left").toLowerCase();
-  const maxLines = N(opts.maxLines ?? box.maxLines ?? 50);
+  // Strip optional leading "L_"
+  const k = key.startsWith("L_") || key.startsWith("l_") ? key.slice(2) : key;
 
-  const lineGap = N(opts.lineGap ?? box.gap ?? 2);
-  const bulletIndent = N(opts.bulletIndent ?? box.bulletIndent ?? 12);
+  // Style 1/2: p1_name_x
+  const bits = k.split("_");
+  if (bits.length >= 3 && /^p\d+$/i.test(bits[0])) {
+    const pageKey = bits[0];
+    const boxKey = bits[1];
+    const prop = bits.slice(2).join("_");
+    return { pageKey, boxKey, prop };
+  }
 
-  // Split lines preserving bullets
-  const rawLines = S(text).replace(/\r/g, "").split("\n");
+  // Style 3: p1_namex (or p5_chartw)
+  const m = k.match(/^(p\d+)_([A-Za-z0-9]+)(x|y|w|h|size|maxLines|align)$/i);
+  if (m) return { pageKey: m[1], boxKey: m[2], prop: m[3] };
 
-  // Basic wrap by width (pdf-lib uses WinAnsi widths for standard fonts)
-  const lines = [];
-  for (let raw of rawLines) {
-    raw = S(raw);
+  return null;
+}
 
-    // preserve explicit blank lines
-    if (!raw.trim()) { lines.push(""); continue; }
+function applyLayoutOverridesFromUrl(layout, url) {
+  const applied = [];
+  const ignored = [];
+  if (!layout || !layout.pages || !url) return { applied, ignored };
 
-    const isBullet = raw.trim().startsWith("•");
-    const effectiveW = isBullet ? (w - bulletIndent) : w;
+  const sp = url.searchParams;
+  for (const [rawKey, rawVal] of sp.entries()) {
+    const parsed = parseLayoutParamKey(rawKey);
+    if (!parsed) continue;
 
-    const words = raw.split(/\s+/);
-    let cur = "";
-    for (const word of words) {
-      const test = cur ? (cur + " " + word) : word;
-      const testWidth = font.widthOfTextAtSize(test, size);
-      if (testWidth <= effectiveW) {
-        cur = test;
-      } else {
-        if (cur) lines.push(cur);
-        cur = word;
+    const { pageKey, boxKey, prop } = parsed;
+    const page = layout.pages[pageKey];
+    const box = page ? page[boxKey] : null;
+
+    if (!page || !box || typeof box !== "object") {
+      ignored.push({ key: rawKey, reason: "unknown_box_or_page" });
+      continue;
+    }
+
+    // Only allow properties that already exist in the box,
+    // OR a safe allow-list for numeric geometry + text config.
+    const allow = new Set(["x","y","w","h","size","maxLines","align","titleSize","lineGap","pad"]);
+    const canSet = Object.prototype.hasOwnProperty.call(box, prop) || allow.has(prop);
+
+    if (!canSet) {
+      ignored.push({ key: rawKey, reason: "prop_not_allowed" });
+      continue;
+    }
+
+    let v;
+    if (prop === "align") {
+      v = String(rawVal || "").toLowerCase();
+      if (!["left","center","right"].includes(v)) v = "left";
+    } else if (rawVal === "" || rawVal == null) {
+      ignored.push({ key: rawKey, reason: "empty_value" });
+      continue;
+    } else {
+      const n = Number(rawVal);
+      if (Number.isFinite(n)) v = n;
+      else {
+        ignored.push({ key: rawKey, reason: "not_a_number" });
+        continue;
       }
     }
-    if (cur) lines.push(cur);
+
+    box[prop] = v;
+    applied.push({ key: rawKey, pageKey, boxKey, prop, value: v });
   }
 
-  const finalLines = lines.slice(0, maxLines);
+  return { applied, ignored };
+}
 
-  // Start from top
+/* ───────── text safety (WinAnsi friendly) ───────── */
+
+function safeText(s) {
+  if (s == null) return "";
+  let out = String(s);
+
+  // Strip common trouble-makers
+  out = out.replace(/\u00A0|\u202F/g, " ");              // NBSP / narrow NBSP
+  out = out.replace(/\uFEFF/g, "");                     // BOM
+  out = out.replace(/[\u2500-\u257F]/g, "-");           // box drawing
+  out = out.replace(/\u2013|\u2014|\u2212/g, "-");       // en/em/minus
+  out = out.replace(/\u2018|\u2019/g, "'");             // curly apostrophes
+  out = out.replace(/\u201C|\u201D/g, '"');             // curly quotes
+  out = out.replace(/\u2026/g, "...");                  // ellipsis
+
+  // Remove stray control chars (keep \n and \t)
+  out = out.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ");
+
+  return out;
+}
+
+function norm(s) {
+  const t = safeText(s);
+  return t.trim();
+}
+
+function titleBlock(title, body) {
+  const t = norm(title);
+  const b = norm(body);
+  if (!b) return ""; // do not show empty sections
+  const underline = "-".repeat(Math.min(Math.max(t.length, 4), 40));
+  return `${t}\n${underline}\n${b}`;
+}
+
+function packTriptych({ tldr, main, act, mainTitle }) {
+  const blocks = [];
+  blocks.push(titleBlock("TLDR", tldr));
+  blocks.push(titleBlock(mainTitle || "Summary", main));
+  blocks.push(titleBlock("Key Action", act));
+  return blocks.filter(Boolean).join("\n\n");
+}
+
+/* ───────── PDF helpers ───────── */
+
+function rectTLtoBL(page, box) {
+  const H = page.getHeight();
+  return { x: box.x, y: H - box.y - box.h, w: box.w, h: box.h };
+}
+
+function drawTextBox(page, font, text, box, opts = {}) {
+  const t = norm(text);
+  if (!t) return;
+
+  const maxLines = Number.isFinite(opts.maxLines) ? opts.maxLines : (box.maxLines ?? 50);
+  const lineGap = Number.isFinite(opts.lineGap) ? opts.lineGap : (box.lineGap ?? 2);
+  const pad = Number.isFinite(opts.pad) ? opts.pad : (box.pad ?? 0);
+
+  const size = opts.size ?? box.size ?? 12;
+  const align = opts.align ?? box.align ?? "left";
+
+  const { x, y, w, h } = rectTLtoBL(page, box);
+
+  // primitive word wrap
+  const lines = [];
+  const paras = t.split("\n");
+  for (const para of paras) {
+    const words = para.split(/\s+/).filter(Boolean);
+    let line = "";
+    for (const word of words) {
+      const next = line ? `${line} ${word}` : word;
+      const width = font.widthOfTextAtSize(next, size);
+      if (width <= (w - pad * 2)) {
+        line = next;
+      } else {
+        if (line) lines.push(line);
+        line = word;
+      }
+      if (lines.length >= maxLines) break;
+    }
+    if (lines.length >= maxLines) break;
+    if (line) lines.push(line);
+    // preserve blank line between paragraphs (but not after last)
+    if (paras.length > 1 && para !== paras[paras.length - 1] && lines.length < maxLines) {
+      lines.push("");
+    }
+    if (lines.length >= maxLines) break;
+  }
+
   const lineHeight = size + lineGap;
-  let cursorY = y;
+  let cursorY = y + h - pad - size;
 
-  for (let i = 0; i < finalLines.length; i++) {
-    const line = finalLines[i] ?? "";
+  for (let i = 0; i < lines.length && i < maxLines; i++) {
+    const ln = lines[i];
+    if (cursorY < y + pad) break;
 
-    // Bullet indent handling (only if the line begins with bullet)
-    const isBullet = line.trim().startsWith("•");
-    const drawX = isBullet ? (x + bulletIndent) : x;
-
-    const lineW = font.widthOfTextAtSize(line, size);
-    let tx = drawX;
-
-    if (align === "center") {
-      tx = x + (w - lineW) / 2;
-    } else if (align === "right") {
-      tx = x + w - lineW;
+    let dx = x + pad;
+    if (align !== "left") {
+      const lw = font.widthOfTextAtSize(ln, size);
+      if (align === "center") dx = x + (w - lw) / 2;
+      if (align === "right") dx = x + w - pad - lw;
     }
 
-    // Stop if out of box height
-    if (h && (cursorY - (i * lineHeight) < y - h)) break;
-
-    page.drawText(line, { x: tx, y: cursorY - (i * lineHeight), size, font });
+    page.drawText(ln, { x: dx, y: cursorY, size, font, color: rgb(0, 0, 0) });
+    cursorY -= lineHeight;
   }
 }
 
-function writeSection(page, font, title, content, boxTitle, boxBody, mode = "paragraph", opts = {}) {
-  // Title (underlined)
-  const titleText = `${title}\n${underlineLine(title)}`;
-  drawTextBox(page, font, titleText, boxTitle, { maxLines: 2 });
-
-  // Body
-  let bodyText = content || "";
-  if (mode === "bullets") bodyText = toBulletLines(content);
-
-  drawTextBox(page, font, bodyText, boxBody, opts);
-}
-
-/* ───────────── CHART HELPERS (V4 add) ───────────── */
 /* ───────── radar chart embed (QuickChart) ───────── */
+
 function makeSpiderChartUrl12(bandsRaw) {
   const labels = [
     "C_low","C_mid","C_high","T_low","T_mid","T_high",
     "R_low","R_mid","R_high","L_low","L_mid","L_high",
   ];
 
-  const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
+  const vals = labels.map((k) => Number(bandsRaw?.[k] ?? 0));
   const maxVal = Math.max(...vals, 1);
   const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
@@ -190,672 +318,275 @@ function makeSpiderChartUrl12(bandsRaw) {
         label: "",
         data: scaled,
         fill: true,
-        borderWidth: 0,
-        pointRadius: 0,
-        backgroundColor: "rgba(184, 15, 112, 0.35)",
+        borderWidth: 2,
+        pointRadius: 2,
       }],
     },
     options: {
       plugins: { legend: { display: false } },
       scales: {
         r: {
-          min: 0, max: 1,
+          beginAtZero: true,
+          min: 0,
+          max: 1,
           ticks: { display: false },
-          grid: { display: false },
-          angleLines: { display: false },
-          pointLabels: { display: false },
+          pointLabels: { font: { size: 10 } },
         },
       },
     },
   };
 
-  const enc = encodeURIComponent(JSON.stringify(cfg));
-  return `https://quickchart.io/chart?c=${enc}&format=png&width=800&height=800&backgroundColor=transparent`;
+  const q = encodeURIComponent(JSON.stringify(cfg));
+  return `https://quickchart.io/chart?width=900&height=900&backgroundColor=transparent&c=${q}`;
 }
 
-async function embedRemoteImage(pdfDoc, url) {
-  if (!url) return null;
-
-  // Node 18+ (Vercel nodejs runtime) provides global fetch
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch chart: ${res.status} ${res.statusText}`);
-
-  const buf = new Uint8Array(await res.arrayBuffer());
-  const sig = String.fromCharCode(buf[0], buf[1], buf[2], buf[3] || 0);
-
-  if (sig.startsWith("\x89PNG")) return await pdfDoc.embedPng(buf);
-  if (sig.startsWith("\xff\xd8")) return await pdfDoc.embedJpg(buf);
-
-  try { return await pdfDoc.embedPng(buf); }
-  catch { return await pdfDoc.embedJpg(buf); }
+async function fetchPngBytes(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`chart fetch failed: ${r.status}`);
+  const ab = await r.arrayBuffer();
+  return new Uint8Array(ab);
 }
 
-async function embedRadarFromBands(pdfDoc, page, box, bandsRaw) {
-  if (!pdfDoc || !page || !box || !bandsRaw) return;
+/* ───────── payload normalisation ───────── */
 
-  const hasAny =
-    bandsRaw && typeof bandsRaw === "object" &&
-    Object.values(bandsRaw).some((v) => Number(v) > 0);
+function normalisePayload(raw) {
+  const ctrl = raw?.ctrl || raw?.ct || raw?.payload?.ctrl || {};
+  const summary = ctrl?.summary || raw?.ctrl?.summary || raw?.ctrl?.results || {};
 
-  if (!hasAny) return;
+  const identity = raw?.identity || summary?.identity || {};
+  const fullName = identity?.fullName || raw?.FullName || raw?.fullName || summary?.FullName || "";
+  const email = identity?.email || raw?.Email || raw?.email || summary?.Email || "";
 
-  const url = makeSpiderChartUrl12(bandsRaw);
-  const img = await embedRemoteImage(pdfDoc, url);
-  if (!img) return;
+  const text = raw?.text || ctrl?.text || {};
+  const workWith = raw?.workWith || ctrl?.workWith || {};
 
-  const H = page.getHeight();
-  const { x, y, w, h } = box;
-  page.drawImage(img, { x, y: H - y - h, width: w, height: h });
+  const bands = raw?.bands || ctrl?.bands || summary?.ctrl12 || raw?.ctrl12 || {};
+  const dominantKey = raw?.dominantKey || ctrl?.dominantKey || raw?.domKey || "";
+  const secondKey = raw?.secondKey || ctrl?.secondKey || raw?.secKey || "";
+  const templateKey = raw?.templateKey || ctrl?.templateKey || raw?.tplKey || "";
+
+  const P = {};
+
+  // p1
+  P["p1:name"] = norm(fullName);
+  P["p1:date"] = norm(raw?.dateLbl || identity?.dateLabel || raw?.dateLabel || "");
+
+  // header name
+  P["hdrName"] = norm(fullName);
+
+  // p3
+  P["p3:tldr"] = norm(text.execSummary_tldr || text.p3_exec_tldr || "");
+  P["p3:exec"] = norm(text.execSummary || text.p3_exec || "");
+  P["p3:act"]  = norm(text.execSummary_tipact || text.p3_exec_tipact || "");
+
+  // p4
+  P["p4:tldr"] = norm(text.state_tldr || text.p4_state_tldr || "");
+  P["p4:dom"]  = norm(text.domState || text.p4_dom || "");
+  P["p4:bottom"] = norm(text.bottomState || text.p4_bottom_state || "");
+  P["p4:act"]  = norm(text.state_tipact || text.p4_state_tipact || "");
+
+  // p5
+  P["p5:tldr"] = norm(text.frequency_tldr || text.p5_freq_tldr || "");
+  P["p5:freq"] = norm(text.frequency || text.p5_freq || "");
+
+  // p6
+  P["p6:tldr"] = norm(text.sequence_tldr || text.p6_seq_tldr || "");
+  P["p6:seq"]  = norm(text.sequence || text.p6_seq || "");
+  P["p6:act"]  = norm(text.sequence_tipact || text.p6_seq_tipact || "");
+
+  // p7
+  P["p7:tldr"] = norm(text.theme_tldr || text.p7_theme_tldr || "");
+  P["p7:theme"] = norm(text.theme || text.p7_theme || "");
+  P["p7:act"]  = norm(text.theme_tipact || text.p7_theme_tipact || "");
+  P["p7:themesLow"] = norm(text.themeLow || text.p7_theme_low || "");
+
+  // p8
+  P["p8:collabC"] = norm(workWith?.concealed || "");
+  P["p8:collabT"] = norm(workWith?.triggered || "");
+  P["p8:collabR"] = norm(workWith?.regulated || "");
+  P["p8:collabL"] = norm(workWith?.lead || "");
+
+  // p9
+  P["p9:actAnchor"] = norm(text.act_anchor || text.p9_act_anchor || "");
+
+  return { P, fullName: P["p1:name"], email, bands, dominantKey, secondKey, templateKey };
 }
-/* ───────────── END CHART HELPERS (V4 add) ───────────── */
 
-/* ───────────── layout defaults ───────────── */
+/* ───────── template loading ───────── */
 
-const DEFAULT_LAYOUT = {
-  pages: {
-    // Page numbers are 1-based keys, but we address pdfDoc pages by index (0-based)
-    // p1: cover
-    p1: {
-      name:   { x: 45, y: 453, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
-      date:   { x: 45, y: 405, w: 500, h: 40, size: 14, align: "center", maxLines: 1 },
-    },
-
-    // p3: Exec summary
-    p3: {
-      hdrName: { x: 44, y: 788, w: 530, h: 20, size: 12, align: "left", maxLines: 1 },
-
-      // Title slots
-      tldrTitle: { x: 55, y: 680, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      tldrBody:  { x: 55, y: 650, w: 520, h: 130, size: 12, align: "left", maxLines: 10 },
-
-      execTitle: { x: 55, y: 510, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      execBody:  { x: 55, y: 480, w: 520, h: 160, size: 12, align: "left", maxLines: 12 },
-
-      actTitle:  { x: 55, y: 280, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      actBody:   { x: 55, y: 250, w: 520, h: 80,  size: 12, align: "left", maxLines: 6 },
-    },
-
-    // p4: state deep dive
-    p4: {
-      hdrName: { x: 44, y: 788, w: 530, h: 20, size: 12, align: "left", maxLines: 1 },
-
-      tldrTitle: { x: 55, y: 690, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      tldrBody:  { x: 55, y: 660, w: 520, h: 110, size: 12, align: "left", maxLines: 9 },
-
-      execTitle: { x: 55, y: 530, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      execBody:  { x: 55, y: 500, w: 520, h: 150, size: 12, align: "left", maxLines: 11 },
-
-      actTitle:  { x: 55, y: 295, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      actBody:   { x: 55, y: 265, w: 520, h: 80,  size: 12, align: "left", maxLines: 6 },
-    },
-
-    // p5: frequency
-    p5: {
-      hdrName: { x: 44, y: 788, w: 530, h: 20, size: 12, align: "left", maxLines: 1 },
-
-      tldrTitle: { x: 55, y: 690, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      tldrBody:  { x: 55, y: 660, w: 520, h: 110, size: 12, align: "left", maxLines: 9 },
-
-      execTitle: { x: 55, y: 530, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      execBody:  { x: 55, y: 500, w: 520, h: 200, size: 12, align: "left", maxLines: 14 },
-
-      // V4 add (chart only): spider/radar chart box
-      chart: { x: 380, y: 455, w: 180, h: 180 },
-    },
-
-    // p6: sequence
-    p6: {
-      hdrName: { x: 44, y: 788, w: 530, h: 20, size: 12, align: "left", maxLines: 1 },
-
-      tldrTitle: { x: 55, y: 690, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      tldrBody:  { x: 55, y: 660, w: 520, h: 110, size: 12, align: "left", maxLines: 9 },
-
-      execTitle: { x: 55, y: 530, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      execBody:  { x: 55, y: 500, w: 520, h: 150, size: 12, align: "left", maxLines: 11 },
-
-      actTitle:  { x: 55, y: 295, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      actBody:   { x: 55, y: 265, w: 520, h: 80,  size: 12, align: "left", maxLines: 6 },
-    },
-
-    // p7: themes
-    p7: {
-      hdrName: { x: 44, y: 788, w: 530, h: 20, size: 12, align: "left", maxLines: 1 },
-
-      tldrTitle: { x: 55, y: 690, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      tldrBody:  { x: 55, y: 660, w: 520, h: 110, size: 12, align: "left", maxLines: 9 },
-
-      execTitle: { x: 55, y: 530, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      execBody:  { x: 55, y: 500, w: 520, h: 150, size: 12, align: "left", maxLines: 11 },
-
-      actTitle:  { x: 55, y: 295, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      actBody:   { x: 55, y: 265, w: 520, h: 80,  size: 12, align: "left", maxLines: 6 },
-    },
-
-    // p8: workWith
-    p8: {
-      hdrName: { x: 44, y: 788, w: 530, h: 20, size: 12, align: "left", maxLines: 1 },
-
-      // Left column
-      colL_title: { x: 60, y: 545, w: 240, h: 20, size: 12, align: "left", maxLines: 2 },
-      colL_body:  { x: 60, y: 510, w: 240, h: 250, size: 11, align: "left", maxLines: 16, bulletIndent: 12, gap: 2 },
-
-      // Right column
-      colR_title: { x: 330, y: 545, w: 240, h: 20, size: 12, align: "left", maxLines: 2 },
-      colR_body:  { x: 330, y: 510, w: 240, h: 250, size: 11, align: "left", maxLines: 16, bulletIndent: 12, gap: 2 },
-    },
-
-    // p9: actions
-    p9: {
-      hdrName: { x: 44, y: 788, w: 530, h: 20, size: 12, align: "left", maxLines: 1 },
-
-      tldrTitle: { x: 55, y: 690, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      tldrBody:  { x: 55, y: 660, w: 520, h: 110, size: 12, align: "left", maxLines: 9 },
-
-      execTitle: { x: 55, y: 530, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
-      execBody:  { x: 55, y: 500, w: 520, h: 150, size: 12, align: "left", maxLines: 11 },
-    }
+async function loadTemplateBytes(templateKey) {
+  if (!VALID_TEMPLATE_KEYS.has(templateKey)) {
+    throw new Error(`invalid templateKey "${templateKey}" (expected one of ${Array.from(VALID_TEMPLATE_KEYS).join(", ")})`);
   }
-};
-
-/* ───────────── layout override via URL ───────────── */
-
-function applyLayoutOverridesFromUrl(layout, url) {
-  // Supports:
-  // &p3_tldrTitle_x=... &p3_tldrTitle_y=... etc
-  // Keys are: p{N}_{box}_{prop}
-  // props: x y w h size align maxLines gap bulletIndent
-  const out = safeJson(layout);
-  out.pages = out.pages || {};
-
-  for (const [k, v] of url.searchParams.entries()) {
-    if (!k.startsWith("p")) continue;
-    const m = k.match(/^(p\d+)_(\w+)_(x|y|w|h|size|maxLines|gap|bulletIndent|align)$/);
-    if (!m) continue;
-
-    const pageKey = m[1];
-    const boxKey = m[2];
-    const prop = m[3];
-
-    out.pages[pageKey] = out.pages[pageKey] || {};
-    out.pages[pageKey][boxKey] = out.pages[pageKey][boxKey] || {};
-
-    if (prop === "align") {
-      out.pages[pageKey][boxKey][prop] = S(v);
-    } else {
-      out.pages[pageKey][boxKey][prop] = N(v);
-    }
-  }
-
-  return out;
+  const file = `${TEMPLATE_PREFIX}${templateKey}${TEMPLATE_SUFFIX}`;
+  const fp = path.join(PUBLIC_DIR, file);
+  return fs.readFile(fp);
 }
 
-/* ───────────── template loading ───────────── */
-
-async function loadTemplateBytesLocal(fname) {
-  if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
-
-  const __file = fileURLToPath(import.meta.url);
-  const __dir = path.dirname(__file);
-
-  const candidates = [
-    path.join(process.cwd(), "public", fname),
-    path.join(__dir, "..", "public", fname),
-    path.join(__dir, "public", fname),
-    path.join(__dir, fname),
-  ];
-
-  let lastErr;
-  for (const pth of candidates) {
-    try {
-      return await fs.readFile(pth);
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw new Error(
-    `Template not found: ${fname}. Tried: ${candidates.join(" | ")}. Last: ${lastErr?.message || "no detail"}`
-  );
-}
-
-async function loadFontBytesLocal(fontRelPath) {
-  // Example: "fonts/OpenSans-Regular.ttf"
-  const safe = String(fontRelPath || "").replace(/^\/+/, "");
-  if (!safe) throw new Error("No font path provided");
-  if (!/\.(ttf|otf)$/i.test(safe)) throw new Error(`Invalid font file: ${safe}`);
-
-  const __file = fileURLToPath(import.meta.url);
-  const __dir = path.dirname(__file);
-
-  const candidates = [
-    path.join(process.cwd(), "public", safe),
-    path.join(__dir, "..", "public", safe),
-    path.join(__dir, "public", safe),
-  ];
-
-  let lastErr;
-  for (const pth of candidates) {
-    try {
-      return await fs.readFile(pth);
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-
-  throw new Error(
-    `Font not found: ${safe}. Tried: ${candidates.join(" | ")}. Last: ${lastErr?.message || "no detail"}`
-  );
-}
-
-/* ───────── payload parsing (GET ?data=... or POST JSON) ───────── */
-
-async function readPayload(req) {
-  if (req.method === "POST") {
-    const chunks = [];
-    for await (const ch of req) chunks.push(ch);
-    const raw = Buffer.concat(chunks).toString("utf8") || "{}";
-    try { return JSON.parse(raw); } catch { return {}; }
-  }
-
-  const url = new URL(req.url, "http://localhost");
-  const dataB64 = url.searchParams.get("data") || "";
-  if (!dataB64) return {};
-
-  try {
-    const raw = Buffer.from(dataB64, "base64").toString("utf8");
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-/* ───────────── payload normalisation ───────────── */
-
-function normalisePayload(P) {
-  const payload = isObj(P) ? safeJson(P) : {};
-
-  // Flatten common shapes:
-  // payload.text.execSummary_tldr -> P["p3:tldr"]
-  const t = payload.text || {};
-  const ww = payload.workWith || {};
-
-  const out = {};
-
-  // Cover
-  out["p1:n"] = norm(getDeep(payload, ["identity", "fullName"], ""));
-  out["p1:e"] = norm(getDeep(payload, ["identity", "email"], ""));
-  out["p1:d"] = norm(getDeep(payload, ["identity", "dateLabel"], getDeep(payload, ["dateLbl"], "")));
-
-  // Page 3
-  out["p3:tldr"] = asText(t.execSummary_tldr);
-  out["p3:exec"] = asText(t.execSummary);
-  out["p3:tip"]  = asText(t.execSummary_tipact);
-
-  // Page 4
-  out["p4:tldr"]     = asText(t.state_tldr);
-  out["p4:stateDeep"] = asText(t.domState);
-  out["p4:action"]    = asText(t.state_tipact);
-  out["p4:bottom"]    = asText(t.bottomState);
-
-  // Page 5
-  out["p5:tldr"] = asText(t.frequency_tldr);
-  out["p5:freq"] = asText(t.frequency);
-
-  // Page 6
-  out["p6:tldr"] = asText(t.sequence_tldr);
-  out["p6:seq"]  = asText(t.sequence);
-  out["p6:tip"]  = asText(t.sequence_tipact);
-
-  // Page 7
-  out["p7:tldr"] = asText(t.theme_tldr);
-  out["p7:theme"] = asText(t.theme);
-  out["p7:tip"] = asText(t.theme_tipact);
-
-  // Page 8 workWith columns
-  out["p8:colL_title"] = "Concealed";
-  out["p8:colL_body"]  = asText(ww.concealed);
-
-  out["p8:colR_title"] = "Triggered";
-  out["p8:colR_body"]  = asText(ww.triggered);
-
-  // Page 9
-  out["p9:tldr"] = asText(t.act_anchor);
-  out["p9:exec"] = asText(t.execSummary);
-  out["p9:tip"]  = asText(t.execSummary_tipact);
-
-  // Keep ctrl info
-  out.ctrl = payload.ctrl || {};
-  out.layout = payload.layout || {};
-
-  return out;
-}
-
-/* ───────────── dom/2nd resolution ───────────── */
-
-function computeDomAndSecondKeys(P) {
-  // Prefer keys directly
-  const domKey = norm(getDeep(P, ["ctrl", "dominantKey"], "")).toUpperCase();
-  const secondKey = norm(getDeep(P, ["ctrl", "secondKey"], "")).toUpperCase();
-  if (domKey && secondKey) return { domKey, secondKey };
-
-  // Fallback: infer from labels (Concealed/Triggered/Regulated/Lead)
-  const toKey = (label) => {
-    const s = norm(label).toLowerCase();
-    if (s.startsWith("con")) return "C";
-    if (s.startsWith("tri")) return "T";
-    if (s.startsWith("reg")) return "R";
-    if (s.startsWith("lea")) return "L";
-    return "";
-  };
-
-  const dom = toKey(getDeep(P, ["ctrl", "dominant"], ""));
-  const snd = toKey(getDeep(P, ["ctrl", "secondState"], ""));
-  return { domKey: dom || "C", secondKey: snd || "T" };
-}
-
-/* ───────────── main handler ───────────── */
+/* ───────── main handler ───────── */
 
 export default async function handler(req, res) {
   try {
     const url = new URL(req.url, "http://localhost");
+    const debugMode = ["1","true","yes"].includes(String(url.searchParams.get("debug") || "").toLowerCase());
 
-    // Optional debug probe
-    const debug = url.searchParams.get("debug") === "1";
+    // payload: prefer ?data= base64(json). Fallback to JSON body.
+    let raw = null;
 
-    const payload = await readPayload(req);
-    const P = normalisePayload(payload);
+    const dataB64 = url.searchParams.get("data");
+    if (dataB64) {
+      try {
+        const json = Buffer.from(decodeURIComponent(dataB64), "base64").toString("utf8");
+        raw = JSON.parse(json);
+      } catch (e) {
+        const json = Buffer.from(dataB64, "base64").toString("utf8");
+        raw = JSON.parse(json);
+      }
+    } else if (req.method === "POST") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      raw = body ? JSON.parse(body) : {};
+    } else {
+      raw = {};
+    }
 
-    if (debug) {
-      return res.status(200).json({
+    const { P, fullName, bands, dominantKey, secondKey, templateKey: tplFromPayload } = normalisePayload(raw);
+
+    // Template selection: prefer explicit templateKey; else build from dom+second (e.g. T + L => TL)
+    const domKey = String(dominantKey || "").toUpperCase().slice(0, 1);
+    const secKey = String(secondKey || "").toUpperCase().slice(0, 1);
+    const templateKey = (tplFromPayload && String(tplFromPayload).toUpperCase()) || `${domKey}${secKey}`;
+
+    // Layout: default -> payload override -> URL overrides
+    const payloadLayout = raw?.layout || raw?.ctrl?.layout || raw?.ct?.layout || null;
+    const layout = mergeLayout(DEFAULT_LAYOUT, payloadLayout);
+
+    const { applied: layoutApplied, ignored: layoutIgnored } = applyLayoutOverridesFromUrl(layout, url);
+
+    if (debugMode) {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.status(200).send(JSON.stringify({
         ok: true,
-        where: "fill-template:v2:after_normaliseInput",
-        lengths: {
-          p3_exec: (P["p3:exec"] || "").length,
-          p3_tldr: (P["p3:tldr"] || "").length,
-          p3_tip:  (P["p3:tip"]  || "").length,
-
-          p4_main: (P["p4:stateDeep"] || "").length,
-          p4_tldr: (P["p4:tldr"] || "").length,
-          p4_act:  (P["p4:action"] || "").length,
-
-          p5_main: (P["p5:freq"] || "").length,
-          p5_tldr: (P["p5:tldr"] || "").length,
-
-          p6_main: (P["p6:seq"] || "").length,
-          p6_tldr: (P["p6:tldr"] || "").length,
-          p6_act:  (P["p6:tip"] || "").length,
-
-          p7_main: (P["p7:theme"] || "").length,
-          p7_tldr: (P["p7:tldr"] || "").length,
-          p7_act:  (P["p7:tip"] || "").length,
-
-          p8_L: (P["p8:colL_body"] || "").length,
-          p8_R: (P["p8:colR_body"] || "").length,
-
-          p9_tldr: (P["p9:tldr"] || "").length
-        }
-      });
+        v: 5,
+        templateKey,
+        identity: { fullName },
+        layout,
+        layoutOverrides: { applied: layoutApplied, ignored: layoutIgnored },
+      }, null, 2));
+      return;
     }
 
-    const { domKey, secondKey } = computeDomAndSecondKeys(P);
-    const combo = `${domKey}${secondKey}`;
+    const templateBytes = await loadTemplateBytes(templateKey);
+    const pdfDoc = await PDFDocument.load(templateBytes);
 
-    const validCombos = new Set(["CT","CL","CR","TC","TR","TL","RC","RT","RL","LC","LR","LT"]);
-    const safeCombo = validCombos.has(combo) ? combo : "CT";
-    const tpl = `CTRL_PoC_Assessment_Profile_template_${safeCombo}.pdf`;
-
-    const pdfBytes = await loadTemplateBytesLocal(tpl);
-    const pdfDoc = await PDFDocument.load(pdfBytes);
-    // Font: allow custom TTF/OTF via /public/fonts (URL override: &font=fonts/OpenSans-Regular.ttf)
-    pdfDoc.registerFontkit(fontkit);
-    const fontPath = url.searchParams.get("font") || "fonts/OpenSans-Regular.ttf";
-
-    let font;
-    try {
-      const fontBytes = await loadFontBytesLocal(fontPath);
-      font = await pdfDoc.embedFont(fontBytes, { subset: true });
-    } catch (e) {
-      console.warn("[fill-template] Custom font failed, falling back to Helvetica:", e?.message || String(e));
-      font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    }
-
-    // Layout: default + payload overrides + URL overrides (URL overrides already cover ALL boxes)
-    let layout = mergeLayout(P.layout);
-    layout = applyLayoutOverridesFromUrl(layout, url);
-    const L = (layout && layout.pages) ? layout.pages : DEFAULT_LAYOUT.pages;
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
     const pages = pdfDoc.getPages();
+    const L = layout.pages;
 
-    // --- Header name on pages 2–10 (index 1+) ---
-    const headerName = norm(P["p1:n"]);
-    if (headerName) {
-      for (let i = 1; i < pages.length; i++) {
-        const pageKey = `p${i + 1}`;
-        const box = L?.[pageKey]?.hdrName || L?.p3?.hdrName; // fallback to p3 header coords
-        if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1 });
-      }
-    }
-
-    // --- Page 1: cover ---
+    // p1
     if (pages[0] && L.p1) {
-      if (L.p1.name) {
-        drawTextBox(pages[0], font, P["p1:n"], L.p1.name, { maxLines: L.p1.name.maxLines ?? 1 });
-      }
-
-      // Email removed entirely (do not draw it)
-
-      if (L.p1.date) {
-        drawTextBox(pages[0], font, P["p1:d"], L.p1.date, { maxLines: L.p1.date.maxLines ?? 1 });
-      }
+      drawTextBox(pages[0], fontB, P["p1:name"], L.p1.name, { maxLines: L.p1.name.maxLines });
+      drawTextBox(pages[0], font, P["p1:date"], L.p1.date, { maxLines: L.p1.date.maxLines });
     }
 
-    // --- Page 3: Exec Summary ---
-    const p3 = pages[2];
-    if (p3 && L.p3) {
-      // TLDR (bullets)
-      writeSection(
-        p3, font,
-        "TLDR",
-        P["p3:tldr"],
-        L.p3.tldrTitle,
-        L.p3.tldrBody,
-        "bullets",
-        { maxLines: L.p3.tldrBody?.maxLines ?? 10 }
-      );
-
-      // Main text (NO "Executive Summary" title)
-      drawTextBox(
-        p3, font,
-        P["p3:exec"],
-        L.p3.execBody,
-        { maxLines: L.p3.execBody?.maxLines ?? 12 }
-      );
-
-      // Key Action (short)
-      writeSection(
-        p3, font,
-        "Key Action",
-        P["p3:tip"],
-        L.p3.actTitle,
-        L.p3.actBody,
-        "paragraph",
-        { maxLines: L.p3.actBody?.maxLines ?? 6 }
-      );
+    // p2–p10 header name
+    for (let i = 1; i < pages.length; i++) {
+      const pk = `p${i+1}`;
+      if (L[pk]?.hdrName) drawTextBox(pages[i], font, P["hdrName"], L[pk].hdrName, { maxLines: 1 });
     }
 
-    // --- Page 4: State Deep Dive ---
-    const p4 = pages[3];
-    if (p4 && L.p4) {
-      writeSection(
-        p4, font,
-        "TLDR",
-        P["p4:tldr"],
-        L.p4.tldrTitle,
-        L.p4.tldrBody,
-        "bullets",
-        { maxLines: L.p4.tldrBody?.maxLines ?? 9 }
-      );
-
-      // Main text (NO "Executive Summary" title) — include dom + bottom if present
-      const domText = norm(P["p4:stateDeep"]);
-      const bottomText = norm(P["p4:bottom"]);
-      const p4Exec = [domText, bottomText].filter(Boolean).join("\n\n");
-
-      drawTextBox(
-        p4, font,
-        p4Exec,
-        L.p4.execBody,
-        { maxLines: L.p4.execBody?.maxLines ?? 11 }
-      );
-
-      writeSection(
-        p4, font,
-        "Key Action",
-        P["p4:action"],
-        L.p4.actTitle,
-        L.p4.actBody,
-        "paragraph",
-        { maxLines: L.p4.actBody?.maxLines ?? 6 }
-      );
+    // p3
+    if (pages[2] && L.p3?.domDesc) {
+      const packed = packTriptych({
+        tldr: P["p3:tldr"],
+        main: P["p3:exec"],
+        act: P["p3:act"],
+        mainTitle: "Executive Summary",
+      });
+      drawTextBox(pages[2], font, packed, L.p3.domDesc, { maxLines: L.p3.domDesc.maxLines });
     }
 
-    // --- Page 5: Frequency ---
-    const p5 = pages[4];
-    if (p5 && L.p5) {
-      writeSection(
-        p5, font,
-        "TLDR",
-        P["p5:tldr"],
-        L.p5.tldrTitle,
-        L.p5.tldrBody,
-        "bullets",
-        { maxLines: L.p5.tldrBody?.maxLines ?? 9 }
-      );
+    // p4
+    if (pages[3] && L.p4?.spider) {
+      const main = [P["p4:dom"], P["p4:bottom"]].filter(Boolean).join("\n\n");
+      const packed = packTriptych({
+        tldr: P["p4:tldr"],
+        main,
+        act: P["p4:act"],
+        mainTitle: "State Deep Dive",
+      });
+      drawTextBox(pages[3], font, packed, L.p4.spider, { maxLines: L.p4.spider.maxLines });
+    }
 
-      // Main text (NO "Executive Summary" title)
-      drawTextBox(
-        p5, font,
-        P["p5:freq"],
-        L.p5.execBody,
-        { maxLines: L.p5.execBody?.maxLines ?? 14 }
-      );
+    // p5 + chart
+    if (pages[4] && L.p5) {
+      const packed = packTriptych({
+        tldr: P["p5:tldr"],
+        main: P["p5:freq"],
+        act: "",
+        mainTitle: "Frequency",
+      });
+      if (L.p5.seqpat && packed) drawTextBox(pages[4], font, packed, L.p5.seqpat, { maxLines: L.p5.seqpat.maxLines });
 
-      // V4 add (chart only): draw radar from ctrl12 bands if present
-      const bands12 =
-        getDeep(P, ["ctrl","summary","ctrl12"], null) ||
-        getDeep(P, ["ctrl","ctrl12"], null) ||
-        getDeep(P, ["ctrl","bands"], null);
-
-      if (L?.p5?.chart) {
-        await embedRadarFromBands(pdfDoc, p5, L.p5.chart, bands12);
+      if (L.p5.chart) {
+        const chartUrl = makeSpiderChartUrl12(bands || {});
+        try {
+          const png = await fetchPngBytes(chartUrl);
+          const img = await pdfDoc.embedPng(png);
+          const { x, y, w, h } = rectTLtoBL(pages[4], { ...L.p5.chart, h: L.p5.chart.h ?? 300, w: L.p5.chart.w ?? 300 });
+          pages[4].drawImage(img, { x, y, width: w, height: h });
+        } catch {}
       }
     }
 
-    // --- Page 6: Sequence ---
-    const p6 = pages[5];
-    if (p6 && L.p6) {
-      writeSection(
-        p6, font,
-        "TLDR",
-        P["p6:tldr"],
-        L.p6.tldrTitle,
-        L.p6.tldrBody,
-        "bullets",
-        { maxLines: L.p6.tldrBody?.maxLines ?? 9 }
-      );
-
-      // Main text (NO "Executive Summary" title)
-      drawTextBox(
-        p6, font,
-        P["p6:seq"],
-        L.p6.execBody,
-        { maxLines: L.p6.execBody?.maxLines ?? 11 }
-      );
-
-      writeSection(
-        p6, font,
-        "Key Action",
-        P["p6:tip"],
-        L.p6.actTitle,
-        L.p6.actBody,
-        "paragraph",
-        { maxLines: L.p6.actBody?.maxLines ?? 6 }
-      );
+    // p6
+    if (pages[5] && L.p6?.themeExpl) {
+      const packed = packTriptych({
+        tldr: P["p6:tldr"],
+        main: P["p6:seq"],
+        act: P["p6:act"],
+        mainTitle: "Sequence",
+      });
+      drawTextBox(pages[5], font, packed, L.p6.themeExpl, { maxLines: L.p6.themeExpl.maxLines });
     }
 
-    // --- Page 7: Themes ---
-    const p7 = pages[6];
-    if (p7 && L.p7) {
-      writeSection(
-        p7, font,
-        "TLDR",
-        P["p7:tldr"],
-        L.p7.tldrTitle,
-        L.p7.tldrBody,
-        "bullets",
-        { maxLines: L.p7.tldrBody?.maxLines ?? 9 }
-      );
-
-      // Main text (NO "Executive Summary" title)
-      drawTextBox(
-        p7, font,
-        P["p7:theme"],
-        L.p7.execBody,
-        { maxLines: L.p7.execBody?.maxLines ?? 11 }
-      );
-
-      writeSection(
-        p7, font,
-        "Key Action",
-        P["p7:tip"],
-        L.p7.actTitle,
-        L.p7.actBody,
-        "paragraph",
-        { maxLines: L.p7.actBody?.maxLines ?? 6 }
-      );
+    // p7
+    if (pages[6] && L.p7) {
+      const packed = packTriptych({
+        tldr: P["p7:tldr"],
+        main: P["p7:theme"],
+        act: P["p7:act"],
+        mainTitle: "Themes",
+      });
+      if (L.p7.themesTop) drawTextBox(pages[6], font, packed, L.p7.themesTop, { maxLines: L.p7.themesTop.maxLines });
+      if (L.p7.themesLow) drawTextBox(pages[6], font, P["p7:themesLow"], L.p7.themesLow, { maxLines: L.p7.themesLow.maxLines });
     }
 
-    // --- Page 8: WorkWith ---
-    const p8 = pages[7];
-    if (p8 && L.p8) {
-      if (L.p8.colL_title) drawTextBox(p8, font, P["p8:colL_title"], L.p8.colL_title, { maxLines: L.p8.colL_title.maxLines ?? 2 });
-      if (L.p8.colL_body)  drawTextBox(p8, font, P["p8:colL_body"],  L.p8.colL_body,  { maxLines: L.p8.colL_body.maxLines ?? 16 });
-
-      if (L.p8.colR_title) drawTextBox(p8, font, P["p8:colR_title"], L.p8.colR_title, { maxLines: L.p8.colR_title.maxLines ?? 2 });
-      if (L.p8.colR_body)  drawTextBox(p8, font, P["p8:colR_body"],  L.p8.colR_body,  { maxLines: L.p8.colR_body.maxLines ?? 16 });
+    // p8
+    if (pages[7] && L.p8) {
+      if (L.p8.collabC) drawTextBox(pages[7], font, P["p8:collabC"], L.p8.collabC, { maxLines: L.p8.collabC.maxLines });
+      if (L.p8.collabT) drawTextBox(pages[7], font, P["p8:collabT"], L.p8.collabT, { maxLines: L.p8.collabT.maxLines });
+      if (L.p8.collabR) drawTextBox(pages[7], font, P["p8:collabR"], L.p8.collabR, { maxLines: L.p8.collabR.maxLines });
+      if (L.p8.collabL) drawTextBox(pages[7], font, P["p8:collabL"], L.p8.collabL, { maxLines: L.p8.collabL.maxLines });
     }
 
-    // --- Page 9: Actions ---
-    const p9 = pages[8];
-    if (p9 && L.p9) {
-      writeSection(
-        p9, font,
-        "TLDR",
-        P["p9:tldr"],
-        L.p9.tldrTitle,
-        L.p9.tldrBody,
-        "bullets",
-        { maxLines: L.p9.tldrBody?.maxLines ?? 9 }
-      );
-
-      // Main text (NO "Executive Summary" title)
-      drawTextBox(
-        p9, font,
-        P["p9:exec"],
-        L.p9.execBody,
-        { maxLines: L.p9.execBody?.maxLines ?? 11 }
-      );
+    // p9
+    if (pages[8] && L.p9?.actAnchor) {
+      drawTextBox(pages[8], font, P["p9:actAnchor"], L.p9.actAnchor, { maxLines: L.p9.actAnchor.maxLines });
     }
 
-    const outBytes = await pdfDoc.save();
-
+    const pdfBytes = await pdfDoc.save();
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="CTRL_PoC_${safeCombo}.pdf"`);
-    return res.status(200).send(Buffer.from(outBytes));
+    res.setHeader("Content-Disposition", 'inline; filename="CTRL_PoC_Report.pdf"');
+    res.status(200).send(Buffer.from(pdfBytes));
   } catch (err) {
-    return res.status(500).json({
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.status(500).send(JSON.stringify({
       ok: false,
-      error: err?.message || String(err),
-      stack: err?.stack || ""
-    });
+      error: String(err?.message || err),
+      stack: (err?.stack || "").split("\n").slice(0, 10),
+    }, null, 2));
   }
 }
