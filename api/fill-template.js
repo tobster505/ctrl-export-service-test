@@ -480,9 +480,9 @@ export default async function handler(req, res) {
     // Optional debug probe
     const debug = url.searchParams.get("debug") === "1";
 
-    const payload = await readPayload(req);
-    const P0 = normalisePayload(payload);
-    const P = normalisePayload(P0); // idempotent
+const payload = await readPayload(req);
+const P = normalisePayload(payload);
+
 
     if (debug) {
       return res.status(200).json({
