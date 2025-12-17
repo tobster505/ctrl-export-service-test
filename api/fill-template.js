@@ -1,4 +1,4 @@
-// V3
+// V4 (Chart-only changes added)
 /**
  * CTRL PoC Export Service · fill-template (Starter/PoC flow)
  * Place at: /api/fill-template.js  (ctrl-poc-service)
@@ -170,6 +170,85 @@ function writeSection(page, font, title, content, boxTitle, boxBody, mode = "par
   drawTextBox(page, font, bodyText, boxBody, opts);
 }
 
+/* ───────────── CHART HELPERS (V4 add) ───────────── */
+/* ───────── radar chart embed (QuickChart) ───────── */
+function makeSpiderChartUrl12(bandsRaw) {
+  const labels = [
+    "C_low","C_mid","C_high","T_low","T_mid","T_high",
+    "R_low","R_mid","R_high","L_low","L_mid","L_high",
+  ];
+
+  const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
+  const maxVal = Math.max(...vals, 1);
+  const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
+
+  const cfg = {
+    type: "radar",
+    data: {
+      labels,
+      datasets: [{
+        label: "",
+        data: scaled,
+        fill: true,
+        borderWidth: 0,
+        pointRadius: 0,
+        backgroundColor: "rgba(184, 15, 112, 0.35)",
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        r: {
+          min: 0, max: 1,
+          ticks: { display: false },
+          grid: { display: false },
+          angleLines: { display: false },
+          pointLabels: { display: false },
+        },
+      },
+    },
+  };
+
+  const enc = encodeURIComponent(JSON.stringify(cfg));
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=800&height=800&backgroundColor=transparent`;
+}
+
+async function embedRemoteImage(pdfDoc, url) {
+  if (!url) return null;
+
+  // Node 18+ (Vercel nodejs runtime) provides global fetch
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch chart: ${res.status} ${res.statusText}`);
+
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const sig = String.fromCharCode(buf[0], buf[1], buf[2], buf[3] || 0);
+
+  if (sig.startsWith("\x89PNG")) return await pdfDoc.embedPng(buf);
+  if (sig.startsWith("\xff\xd8")) return await pdfDoc.embedJpg(buf);
+
+  try { return await pdfDoc.embedPng(buf); }
+  catch { return await pdfDoc.embedJpg(buf); }
+}
+
+async function embedRadarFromBands(pdfDoc, page, box, bandsRaw) {
+  if (!pdfDoc || !page || !box || !bandsRaw) return;
+
+  const hasAny =
+    bandsRaw && typeof bandsRaw === "object" &&
+    Object.values(bandsRaw).some((v) => Number(v) > 0);
+
+  if (!hasAny) return;
+
+  const url = makeSpiderChartUrl12(bandsRaw);
+  const img = await embedRemoteImage(pdfDoc, url);
+  if (!img) return;
+
+  const H = page.getHeight();
+  const { x, y, w, h } = box;
+  page.drawImage(img, { x, y: H - y - h, width: w, height: h });
+}
+/* ───────────── END CHART HELPERS (V4 add) ───────────── */
+
 /* ───────────── layout defaults ───────────── */
 
 const DEFAULT_LAYOUT = {
@@ -219,6 +298,9 @@ const DEFAULT_LAYOUT = {
 
       execTitle: { x: 55, y: 530, w: 520, h: 18, size: 14, align: "left", maxLines: 2 },
       execBody:  { x: 55, y: 500, w: 520, h: 200, size: 12, align: "left", maxLines: 14 },
+
+      // V4 add (chart only): spider/radar chart box
+      chart: { x: 380, y: 455, w: 180, h: 180 },
     },
 
     // p6: sequence
@@ -479,9 +561,8 @@ export default async function handler(req, res) {
     // Optional debug probe
     const debug = url.searchParams.get("debug") === "1";
 
-const payload = await readPayload(req);
-const P = normalisePayload(payload);
-
+    const payload = await readPayload(req);
+    const P = normalisePayload(payload);
 
     if (debug) {
       return res.status(200).json({
@@ -549,181 +630,189 @@ const P = normalisePayload(payload);
     if (headerName) {
       for (let i = 1; i < pages.length; i++) {
         const pageKey = `p${i + 1}`;
-const box = L?.[pageKey]?.hdrName || L?.p3?.hdrName; // fallback to p3 header coords
-if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1 });
-
+        const box = L?.[pageKey]?.hdrName || L?.p3?.hdrName; // fallback to p3 header coords
+        if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1 });
       }
     }
 
-// --- Page 1: cover ---
-if (pages[0] && L.p1) {
-  if (L.p1.name) {
-    drawTextBox(pages[0], font, P["p1:n"], L.p1.name, { maxLines: L.p1.name.maxLines ?? 1 });
-  }
+    // --- Page 1: cover ---
+    if (pages[0] && L.p1) {
+      if (L.p1.name) {
+        drawTextBox(pages[0], font, P["p1:n"], L.p1.name, { maxLines: L.p1.name.maxLines ?? 1 });
+      }
 
-  // Email removed entirely (do not draw it)
+      // Email removed entirely (do not draw it)
 
-  if (L.p1.date) {
-    drawTextBox(pages[0], font, P["p1:d"], L.p1.date, { maxLines: L.p1.date.maxLines ?? 1 });
-  }
-}
+      if (L.p1.date) {
+        drawTextBox(pages[0], font, P["p1:d"], L.p1.date, { maxLines: L.p1.date.maxLines ?? 1 });
+      }
+    }
 
-// --- Page 3: Exec Summary ---
-const p3 = pages[2];
-if (p3 && L.p3) {
-  // TLDR (bullets)
-  writeSection(
-    p3, font,
-    "TLDR",
-    P["p3:tldr"],
-    L.p3.tldrTitle,
-    L.p3.tldrBody,
-    "bullets",
-    { maxLines: L.p3.tldrBody?.maxLines ?? 10 }
-  );
+    // --- Page 3: Exec Summary ---
+    const p3 = pages[2];
+    if (p3 && L.p3) {
+      // TLDR (bullets)
+      writeSection(
+        p3, font,
+        "TLDR",
+        P["p3:tldr"],
+        L.p3.tldrTitle,
+        L.p3.tldrBody,
+        "bullets",
+        { maxLines: L.p3.tldrBody?.maxLines ?? 10 }
+      );
 
-  // Main text (NO "Executive Summary" title)
-  drawTextBox(
-    p3, font,
-    P["p3:exec"],
-    L.p3.execBody,
-    { maxLines: L.p3.execBody?.maxLines ?? 12 }
-  );
+      // Main text (NO "Executive Summary" title)
+      drawTextBox(
+        p3, font,
+        P["p3:exec"],
+        L.p3.execBody,
+        { maxLines: L.p3.execBody?.maxLines ?? 12 }
+      );
 
-  // Key Action (short)
-  writeSection(
-    p3, font,
-    "Key Action",
-    P["p3:tip"],
-    L.p3.actTitle,
-    L.p3.actBody,
-    "paragraph",
-    { maxLines: L.p3.actBody?.maxLines ?? 6 }
-  );
-}
+      // Key Action (short)
+      writeSection(
+        p3, font,
+        "Key Action",
+        P["p3:tip"],
+        L.p3.actTitle,
+        L.p3.actBody,
+        "paragraph",
+        { maxLines: L.p3.actBody?.maxLines ?? 6 }
+      );
+    }
 
-// --- Page 4: State Deep Dive ---
-const p4 = pages[3];
-if (p4 && L.p4) {
-  writeSection(
-    p4, font,
-    "TLDR",
-    P["p4:tldr"],
-    L.p4.tldrTitle,
-    L.p4.tldrBody,
-    "bullets",
-    { maxLines: L.p4.tldrBody?.maxLines ?? 9 }
-  );
+    // --- Page 4: State Deep Dive ---
+    const p4 = pages[3];
+    if (p4 && L.p4) {
+      writeSection(
+        p4, font,
+        "TLDR",
+        P["p4:tldr"],
+        L.p4.tldrTitle,
+        L.p4.tldrBody,
+        "bullets",
+        { maxLines: L.p4.tldrBody?.maxLines ?? 9 }
+      );
 
-  // Main text (NO "Executive Summary" title) — include dom + bottom if present
-  const domText = norm(P["p4:stateDeep"]);
-  const bottomText = norm(P["p4:bottom"]);
-  const p4Exec = [domText, bottomText].filter(Boolean).join("\n\n");
+      // Main text (NO "Executive Summary" title) — include dom + bottom if present
+      const domText = norm(P["p4:stateDeep"]);
+      const bottomText = norm(P["p4:bottom"]);
+      const p4Exec = [domText, bottomText].filter(Boolean).join("\n\n");
 
-  drawTextBox(
-    p4, font,
-    p4Exec,
-    L.p4.execBody,
-    { maxLines: L.p4.execBody?.maxLines ?? 11 }
-  );
+      drawTextBox(
+        p4, font,
+        p4Exec,
+        L.p4.execBody,
+        { maxLines: L.p4.execBody?.maxLines ?? 11 }
+      );
 
-  writeSection(
-    p4, font,
-    "Key Action",
-    P["p4:action"],
-    L.p4.actTitle,
-    L.p4.actBody,
-    "paragraph",
-    { maxLines: L.p4.actBody?.maxLines ?? 6 }
-  );
-}
+      writeSection(
+        p4, font,
+        "Key Action",
+        P["p4:action"],
+        L.p4.actTitle,
+        L.p4.actBody,
+        "paragraph",
+        { maxLines: L.p4.actBody?.maxLines ?? 6 }
+      );
+    }
 
+    // --- Page 5: Frequency ---
+    const p5 = pages[4];
+    if (p5 && L.p5) {
+      writeSection(
+        p5, font,
+        "TLDR",
+        P["p5:tldr"],
+        L.p5.tldrTitle,
+        L.p5.tldrBody,
+        "bullets",
+        { maxLines: L.p5.tldrBody?.maxLines ?? 9 }
+      );
 
-// --- Page 5: Frequency ---
-const p5 = pages[4];
-if (p5 && L.p5) {
-  writeSection(
-    p5, font,
-    "TLDR",
-    P["p5:tldr"],
-    L.p5.tldrTitle,
-    L.p5.tldrBody,
-    "bullets",
-    { maxLines: L.p5.tldrBody?.maxLines ?? 9 }
-  );
+      // Main text (NO "Executive Summary" title)
+      drawTextBox(
+        p5, font,
+        P["p5:freq"],
+        L.p5.execBody,
+        { maxLines: L.p5.execBody?.maxLines ?? 14 }
+      );
 
-  // Main text (NO "Executive Summary" title)
-  drawTextBox(
-    p5, font,
-    P["p5:freq"],
-    L.p5.execBody,
-    { maxLines: L.p5.execBody?.maxLines ?? 14 }
-  );
-}
+      // V4 add (chart only): draw radar from ctrl12 bands if present
+      const bands12 =
+        getDeep(P, ["ctrl","summary","ctrl12"], null) ||
+        getDeep(P, ["ctrl","ctrl12"], null) ||
+        getDeep(P, ["ctrl","bands"], null);
 
-// --- Page 6: Sequence ---
-const p6 = pages[5];
-if (p6 && L.p6) {
-  writeSection(
-    p6, font,
-    "TLDR",
-    P["p6:tldr"],
-    L.p6.tldrTitle,
-    L.p6.tldrBody,
-    "bullets",
-    { maxLines: L.p6.tldrBody?.maxLines ?? 9 }
-  );
+      if (L?.p5?.chart) {
+        await embedRadarFromBands(pdfDoc, p5, L.p5.chart, bands12);
+      }
+    }
 
-  // Main text (NO "Executive Summary" title)
-  drawTextBox(
-    p6, font,
-    P["p6:seq"],
-    L.p6.execBody,
-    { maxLines: L.p6.execBody?.maxLines ?? 11 }
-  );
+    // --- Page 6: Sequence ---
+    const p6 = pages[5];
+    if (p6 && L.p6) {
+      writeSection(
+        p6, font,
+        "TLDR",
+        P["p6:tldr"],
+        L.p6.tldrTitle,
+        L.p6.tldrBody,
+        "bullets",
+        { maxLines: L.p6.tldrBody?.maxLines ?? 9 }
+      );
 
-  writeSection(
-    p6, font,
-    "Key Action",
-    P["p6:tip"],
-    L.p6.actTitle,
-    L.p6.actBody,
-    "paragraph",
-    { maxLines: L.p6.actBody?.maxLines ?? 6 }
-  );
-}
+      // Main text (NO "Executive Summary" title)
+      drawTextBox(
+        p6, font,
+        P["p6:seq"],
+        L.p6.execBody,
+        { maxLines: L.p6.execBody?.maxLines ?? 11 }
+      );
 
-// --- Page 7: Themes ---
-const p7 = pages[6];
-if (p7 && L.p7) {
-  writeSection(
-    p7, font,
-    "TLDR",
-    P["p7:tldr"],
-    L.p7.tldrTitle,
-    L.p7.tldrBody,
-    "bullets",
-    { maxLines: L.p7.tldrBody?.maxLines ?? 9 }
-  );
+      writeSection(
+        p6, font,
+        "Key Action",
+        P["p6:tip"],
+        L.p6.actTitle,
+        L.p6.actBody,
+        "paragraph",
+        { maxLines: L.p6.actBody?.maxLines ?? 6 }
+      );
+    }
 
-  // Main text (NO "Executive Summary" title)
-  drawTextBox(
-    p7, font,
-    P["p7:theme"],
-    L.p7.execBody,
-    { maxLines: L.p7.execBody?.maxLines ?? 11 }
-  );
+    // --- Page 7: Themes ---
+    const p7 = pages[6];
+    if (p7 && L.p7) {
+      writeSection(
+        p7, font,
+        "TLDR",
+        P["p7:tldr"],
+        L.p7.tldrTitle,
+        L.p7.tldrBody,
+        "bullets",
+        { maxLines: L.p7.tldrBody?.maxLines ?? 9 }
+      );
 
-  writeSection(
-    p7, font,
-    "Key Action",
-    P["p7:tip"],
-    L.p7.actTitle,
-    L.p7.actBody,
-    "paragraph",
-    { maxLines: L.p7.actBody?.maxLines ?? 6 }
-  );
-}
+      // Main text (NO "Executive Summary" title)
+      drawTextBox(
+        p7, font,
+        P["p7:theme"],
+        L.p7.execBody,
+        { maxLines: L.p7.execBody?.maxLines ?? 11 }
+      );
+
+      writeSection(
+        p7, font,
+        "Key Action",
+        P["p7:tip"],
+        L.p7.actTitle,
+        L.p7.actBody,
+        "paragraph",
+        { maxLines: L.p7.actBody?.maxLines ?? 6 }
+      );
+    }
 
     // --- Page 8: WorkWith ---
     const p8 = pages[7];
@@ -735,27 +824,27 @@ if (p7 && L.p7) {
       if (L.p8.colR_body)  drawTextBox(p8, font, P["p8:colR_body"],  L.p8.colR_body,  { maxLines: L.p8.colR_body.maxLines ?? 16 });
     }
 
-// --- Page 9: Actions ---
-const p9 = pages[8];
-if (p9 && L.p9) {
-  writeSection(
-    p9, font,
-    "TLDR",
-    P["p9:tldr"],
-    L.p9.tldrTitle,
-    L.p9.tldrBody,
-    "bullets",
-    { maxLines: L.p9.tldrBody?.maxLines ?? 9 }
-  );
+    // --- Page 9: Actions ---
+    const p9 = pages[8];
+    if (p9 && L.p9) {
+      writeSection(
+        p9, font,
+        "TLDR",
+        P["p9:tldr"],
+        L.p9.tldrTitle,
+        L.p9.tldrBody,
+        "bullets",
+        { maxLines: L.p9.tldrBody?.maxLines ?? 9 }
+      );
 
-  // Main text (NO "Executive Summary" title)
-  drawTextBox(
-    p9, font,
-    P["p9:exec"],
-    L.p9.execBody,
-    { maxLines: L.p9.execBody?.maxLines ?? 11 }
-  );
-}
+      // Main text (NO "Executive Summary" title)
+      drawTextBox(
+        p9, font,
+        P["p9:exec"],
+        L.p9.execBody,
+        { maxLines: L.p9.execBody?.maxLines ?? 11 }
+      );
+    }
 
     const outBytes = await pdfDoc.save();
 
