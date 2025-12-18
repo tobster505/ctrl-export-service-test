@@ -550,7 +550,7 @@ export default async function handler(req, res) {
 
     // p3 (physical page index 2)
     if (pages[2]) {
-      if (L.p3TLDR?.domDesc) drawLabelAndBody(pages[2], fontB, font, "TLDR", P["p3:tldr"], L.p3TLDR.domDesc, { lineGap: 0, paraGap: 0 });
+      if (L.p3TLDR?.domDesc) drawLabelAndBody(pages[2], fontB, font, "TLDR", P["p3:tldr"], L.p3TLDR.domDesc, { lineGap: 1, paraGap: 0 });
       if (L.p3main?.domDesc) drawLabelAndBody(pages[2], fontB, font, "",     P["p3:exec"], L.p3main.domDesc);
       if (L.p3act?.domDesc)  drawLabelAndBody(pages[2], fontB, font, "Key action", P["p3:act"], L.p3act.domDesc);
     }
