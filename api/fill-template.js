@@ -558,14 +558,14 @@ export default async function handler(req, res) {
     // p4 (physical page index 3)
     if (pages[3]) {
       const main = [P["p4:dom"], P["p4:bottom"]].filter(Boolean).join("\n\n");
-      if (L.p4TLDR?.spider) drawLabelAndBody(pages[3], fontB, font, "TLDR", P["p4:tldr"], L.p4TLDR.spider, { lineGap: 0, paraGap: 0 });
+      if (L.p4TLDR?.spider) drawLabelAndBody(pages[3], fontB, font, "TLDR", P["p4:tldr"], L.p4TLDR.spider, { lineGap: 2, paraGap: 0 });
       if (L.p4main?.spider) drawLabelAndBody(pages[3], fontB, font, "",     main,         L.p4main.spider);
       if (L.p4act?.spider)  drawLabelAndBody(pages[3], fontB, font, "Key action", P["p4:act"], L.p4act.spider);
     }
 
     // p5 (physical page index 4) + chart
     if (pages[4]) {
-      if (L.p5TLDR?.seqpat) drawLabelAndBody(pages[4], fontB, font, "TLDR", P["p5:tldr"], L.p5TLDR.seqpat, { lineGap: 0, paraGap: 0 });
+      if (L.p5TLDR?.seqpat) drawLabelAndBody(pages[4], fontB, font, "TLDR", P["p5:tldr"], L.p5TLDR.seqpat, { lineGap: 2, paraGap: 0 });
       if (L.p5main?.seqpat) drawLabelAndBody(pages[4], fontB, font, "",     P["p5:freq"], L.p5main.seqpat);
 
       if (L.p5?.chart) {
@@ -581,14 +581,14 @@ export default async function handler(req, res) {
 
     // p6 (physical page index 5)
     if (pages[5]) {
-      if (L.p6TLDR?.themeExpl) drawLabelAndBody(pages[5], fontB, font, "TLDR", P["p6:tldr"], L.p6TLDR.themeExpl, { lineGap: 0, paraGap: 0 });
+      if (L.p6TLDR?.themeExpl) drawLabelAndBody(pages[5], fontB, font, "TLDR", P["p6:tldr"], L.p6TLDR.themeExpl, { lineGap: 2, paraGap: 0 });
       if (L.p6main?.themeExpl) drawLabelAndBody(pages[5], fontB, font, "",     P["p6:seq"],  L.p6main.themeExpl);
       if (L.p6act?.themeExpl)  drawLabelAndBody(pages[5], fontB, font, "Key action", P["p6:act"], L.p6act.themeExpl);
     }
 
     // p7 (physical page index 6)
     if (pages[6]) {
-      if (L.p7TLDR?.themesTop) drawLabelAndBody(pages[6], fontB, font, "TLDR", P["p7:tldr"],  L.p7TLDR.themesTop, { lineGap: 0, paraGap: 0 });
+      if (L.p7TLDR?.themesTop) drawLabelAndBody(pages[6], fontB, font, "TLDR", P["p7:tldr"],  L.p7TLDR.themesTop, { lineGap: 2, paraGap: 0 });
       if (L.p7main?.themesTop) drawLabelAndBody(pages[6], fontB, font, "",     P["p7:theme"], L.p7main.themesTop);
       if (L.p7act?.themesTop)  drawLabelAndBody(pages[6], fontB, font, "Key action", P["p7:act"], L.p7act.themesTop);
       if (L.p7?.themesLow)     drawTextBox(pages[6], font, P["p7:themesLow"], L.p7.themesLow, { maxLines: L.p7.themesLow.maxLines });
