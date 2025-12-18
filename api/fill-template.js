@@ -1,5 +1,6 @@
-// === CTRL PoC fill-template — V6 ===
+// === CTRL PoC fill-template — V6.1 ===
 // Changes vs V5 (targeted, per Toby request):
+// V6.1: tighten TLDR bullet spacing (no other changes).
 // 1) Remove underline separators ("-----") and replace section headings with bold labels only (no line underlines)
 // 2) TLDR bullet points: normalise so each bullet is on its own line
 // 3) Remove middle titles like "State Deep Dive" / "Executive Summary" (static page title already exists in PDF)
@@ -260,6 +261,7 @@ function drawTextBox(page, font, text, box, opts = {}) {
 
   const maxLines = Number.isFinite(opts.maxLines) ? opts.maxLines : (box.maxLines ?? 50);
   const lineGap = Number.isFinite(opts.lineGap) ? opts.lineGap : (box.lineGap ?? 2);
+  const paraGap = Number.isFinite(opts.paraGap) ? opts.paraGap : 1;
   const pad = Number.isFinite(opts.pad) ? opts.pad : (box.pad ?? 0);
 
   const size = opts.size ?? box.size ?? 12;
@@ -285,7 +287,9 @@ function drawTextBox(page, font, text, box, opts = {}) {
     }
     if (lines.length >= maxLines) break;
     if (line) lines.push(line);
-    if (paras.length > 1 && para !== paras[paras.length - 1] && lines.length < maxLines) lines.push("");
+    if (paras.length > 1 && para !== paras[paras.length - 1] && lines.length < maxLines) {
+      for (let g = 0; g < paraGap && lines.length < maxLines; g++) lines.push("");
+    }
     if (lines.length >= maxLines) break;
   }
 
@@ -309,7 +313,7 @@ function drawTextBox(page, font, text, box, opts = {}) {
 }
 
 // Draw a bold label on the first line, then body below (no underline)
-function drawLabelAndBody(page, fontB, font, label, body, box) {
+function drawLabelAndBody(page, fontB, font, label, body, box, bodyOpts = {}) {
   const L = norm(label);
   const B = norm(body);
   if (!L && !B) return;
@@ -344,7 +348,7 @@ function drawLabelAndBody(page, fontB, font, label, body, box) {
       lineGap: box.lineGap,
       pad: box.pad,
     };
-    drawTextBox(page, font, B, bodyBox, { maxLines: bodyBox.maxLines });
+    drawTextBox(page, font, B, bodyBox, { maxLines: bodyBox.maxLines, ...bodyOpts });
   }
 }
 
@@ -546,7 +550,7 @@ export default async function handler(req, res) {
 
     // p3 (physical page index 2)
     if (pages[2]) {
-      if (L.p3TLDR?.domDesc) drawLabelAndBody(pages[2], fontB, font, "TLDR", P["p3:tldr"], L.p3TLDR.domDesc);
+      if (L.p3TLDR?.domDesc) drawLabelAndBody(pages[2], fontB, font, "TLDR", P["p3:tldr"], L.p3TLDR.domDesc, { lineGap: 0, paraGap: 0 });
       if (L.p3main?.domDesc) drawLabelAndBody(pages[2], fontB, font, "",     P["p3:exec"], L.p3main.domDesc);
       if (L.p3act?.domDesc)  drawLabelAndBody(pages[2], fontB, font, "Key action", P["p3:act"], L.p3act.domDesc);
     }
@@ -554,14 +558,14 @@ export default async function handler(req, res) {
     // p4 (physical page index 3)
     if (pages[3]) {
       const main = [P["p4:dom"], P["p4:bottom"]].filter(Boolean).join("\n\n");
-      if (L.p4TLDR?.spider) drawLabelAndBody(pages[3], fontB, font, "TLDR", P["p4:tldr"], L.p4TLDR.spider);
+      if (L.p4TLDR?.spider) drawLabelAndBody(pages[3], fontB, font, "TLDR", P["p4:tldr"], L.p4TLDR.spider, { lineGap: 0, paraGap: 0 });
       if (L.p4main?.spider) drawLabelAndBody(pages[3], fontB, font, "",     main,         L.p4main.spider);
       if (L.p4act?.spider)  drawLabelAndBody(pages[3], fontB, font, "Key action", P["p4:act"], L.p4act.spider);
     }
 
     // p5 (physical page index 4) + chart
     if (pages[4]) {
-      if (L.p5TLDR?.seqpat) drawLabelAndBody(pages[4], fontB, font, "TLDR", P["p5:tldr"], L.p5TLDR.seqpat);
+      if (L.p5TLDR?.seqpat) drawLabelAndBody(pages[4], fontB, font, "TLDR", P["p5:tldr"], L.p5TLDR.seqpat, { lineGap: 0, paraGap: 0 });
       if (L.p5main?.seqpat) drawLabelAndBody(pages[4], fontB, font, "",     P["p5:freq"], L.p5main.seqpat);
 
       if (L.p5?.chart) {
@@ -577,14 +581,14 @@ export default async function handler(req, res) {
 
     // p6 (physical page index 5)
     if (pages[5]) {
-      if (L.p6TLDR?.themeExpl) drawLabelAndBody(pages[5], fontB, font, "TLDR", P["p6:tldr"], L.p6TLDR.themeExpl);
+      if (L.p6TLDR?.themeExpl) drawLabelAndBody(pages[5], fontB, font, "TLDR", P["p6:tldr"], L.p6TLDR.themeExpl, { lineGap: 0, paraGap: 0 });
       if (L.p6main?.themeExpl) drawLabelAndBody(pages[5], fontB, font, "",     P["p6:seq"],  L.p6main.themeExpl);
       if (L.p6act?.themeExpl)  drawLabelAndBody(pages[5], fontB, font, "Key action", P["p6:act"], L.p6act.themeExpl);
     }
 
     // p7 (physical page index 6)
     if (pages[6]) {
-      if (L.p7TLDR?.themesTop) drawLabelAndBody(pages[6], fontB, font, "TLDR", P["p7:tldr"],  L.p7TLDR.themesTop);
+      if (L.p7TLDR?.themesTop) drawLabelAndBody(pages[6], fontB, font, "TLDR", P["p7:tldr"],  L.p7TLDR.themesTop, { lineGap: 0, paraGap: 0 });
       if (L.p7main?.themesTop) drawLabelAndBody(pages[6], fontB, font, "",     P["p7:theme"], L.p7main.themesTop);
       if (L.p7act?.themesTop)  drawLabelAndBody(pages[6], fontB, font, "Key action", P["p7:act"], L.p7act.themesTop);
       if (L.p7?.themesLow)     drawTextBox(pages[6], font, P["p7:themesLow"], L.p7.themesLow, { maxLines: L.p7.themesLow.maxLines });
