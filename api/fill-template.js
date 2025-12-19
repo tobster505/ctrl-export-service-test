@@ -440,15 +440,15 @@ const DEFAULT_LAYOUT = {
     },
 
     // Header name on pages 2–10 (mask template header and write just the name)
-    p2:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p3:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p4:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p5:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p6:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p7:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p8:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p9:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
-    p10: { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1, bg: true } },
+    p2:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p3:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p4:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p5:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p6:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p7:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p8:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p9:  { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
+    p10: { hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1} },
 
     // Pages 3–7: split boxes (TLDR / main / action) to match your coordinate file format
     p3TLDR: { domDesc: { x: 25, y: 310, w: 550, h: 210, size: 15, align: "left", maxLines: 10 } },
@@ -831,15 +831,16 @@ export default async function handler(req, res) {
       if (L.p1.date && P["p1:d"]) drawTextBox(pages[0], font,  P["p1:d"], L.p1.date, { maxLines: 1 });
     }
 
-    // Header (pages 2–10): overwrite template header text with just FullName
-    const headerName = norm(P["p1:n"]);
-    if (headerName) {
-      for (let i = 1; i < pages.length; i++) {
-        const pk = `p${i + 1}`;
-        const box = L?.[pk]?.hdrName;
-        if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1, bg: true });
-      }
-    }
+// Header (pages 2–10): write just FullName
+const headerName = norm(P["p1:n"]);
+if (headerName) {
+  for (let i = 1; i < pages.length; i++) {
+    const pk = `p${i + 1}`;
+    const box = L?.[pk]?.hdrName;
+    if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1 });
+  }
+}
+
 
     // Index mapping (template is 10 pages: 1..10 => 0..9)
     const p3 = pages[2] || null;
