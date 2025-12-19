@@ -795,9 +795,20 @@ export default async function handler(req, res) {
     const url = new URL(req.url, "http://localhost");
     const debug = url.searchParams.get("debug") === "1";
 
-    const payload = await readPayload(req);
-    const P = normaliseInput(payload);
-    const domSecond = computeDomAndSecondKeys(P);
+const payload = await readPayload(req);
+
+// ✅ schema freeze (add this)
+if (payload?.schemaVersion !== "poc.v1") {
+  return res.status(400).json({
+    ok: false,
+    error: "Invalid schemaVersion",
+    expected: "poc.v1",
+    received: payload?.schemaVersion ?? null,
+  });
+}
+
+const P = normaliseInput(payload);
+const domSecond = computeDomAndSecondKeys(P);
 
     // Layout: default + payload overrides + URL overrides (full)
     let layout = deepMerge(DEFAULT_LAYOUT, P.layout || {});
