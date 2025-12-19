@@ -2,7 +2,14 @@
  * CTRL PoC Export Service · fill-template (Starter/PoC flow)
  * Place at: /api/fill-template.js  (ctrl-poc-service)
  *
- * VERSION: V4 (adds split Frequency page blocks for TLDR/main/action)
+ * VERSION: V7
+ * - Keeps V4 layout + rendering + master probe
+ * - Adds V6.1-style payload aliasing + auto-heal for:
+ *   ctrl.summary.dominantKey, ctrl.summary.secondKey, ctrl.summary.templateKey
+ * - Normalises state keys (full words -> C/T/R/L)
+ * - Derives templateKey from dom+second when missing
+ * - Derives dom+second from templateKey when those are missing
+ * - Validates templateKey against 12 combos; safe default CT
  */
 export const config = { runtime: "nodejs" };
 
@@ -15,7 +22,6 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 // Helpers: base64url decode, safe JSON parse, simple guards
 // ────────────────────────────────────────────────────────────────
 function b64urlToUtf8(b64url) {
-  // Convert base64url → base64
   const b64 = String(b64url || "")
     .replace(/-/g, "+")
     .replace(/_/g, "/")
@@ -37,12 +43,6 @@ function normStr(v) {
   return String(v);
 }
 
-function clamp(n, lo, hi) {
-  const x = Number(n);
-  if (Number.isNaN(x)) return lo;
-  return Math.max(lo, Math.min(hi, x));
-}
-
 function pickFirst(obj, keys, fallback = "") {
   for (const k of keys) {
     const v = obj?.[k];
@@ -51,8 +51,92 @@ function pickFirst(obj, keys, fallback = "") {
   return fallback;
 }
 
+// Safe getter for nested paths like "ctrl.summary.dominantKey"
+function getPath(obj, dottedPath) {
+  if (!obj || !dottedPath) return undefined;
+  const parts = String(dottedPath).split(".");
+  let cur = obj;
+  for (const p of parts) {
+    if (!cur || typeof cur !== "object") return undefined;
+    cur = cur[p];
+  }
+  return cur;
+}
+
+function pickFirstPath(obj, paths, fallback = "") {
+  for (const p of paths) {
+    const v = getPath(obj, p);
+    if (v !== null && v !== undefined && String(v).trim().length) return v;
+  }
+  return fallback;
+}
+
 // ────────────────────────────────────────────────────────────────
-// Layout: coordinates (existing system)
+// State key normalisation + templateKey validation
+// ────────────────────────────────────────────────────────────────
+const VALID_TEMPLATE_KEYS = new Set([
+  "CT","CR","CL",
+  "TC","TR","TL",
+  "RC","RT","RL",
+  "LC","LT","LR",
+]);
+
+function toStateLetter(v) {
+  const s = normStr(v).trim();
+  if (!s) return "";
+  const up = s.toUpperCase();
+
+  // Already a letter
+  if (up === "C" || up === "T" || up === "R" || up === "L") return up;
+
+  // Full words (user-facing)
+  const map = {
+    CONCEALED: "C",
+    TRIGGERED: "T",
+    REGULATED: "R",
+    LEAD: "L",
+  };
+  if (map[up]) return map[up];
+
+  // Sometimes people send "Concealed (Emerging)" etc.
+  const cleaned = up.replace(/[^A-Z]/g, "");
+  if (map[cleaned]) return map[cleaned];
+
+  // Sometimes keys like "domKey":"Triggered"
+  if (cleaned.includes("CONCEALED")) return "C";
+  if (cleaned.includes("TRIGGERED")) return "T";
+  if (cleaned.includes("REGULATED")) return "R";
+  if (cleaned.includes("LEAD")) return "L";
+
+  return "";
+}
+
+function normaliseTemplateKey(v) {
+  const s = normStr(v).trim().toUpperCase();
+  if (!s) return "";
+  const cleaned = s.replace(/[^A-Z]/g, "");
+  if (cleaned.length >= 2) {
+    const tk = cleaned.slice(0, 2);
+    if (VALID_TEMPLATE_KEYS.has(tk)) return tk;
+  }
+  return "";
+}
+
+function buildTemplateKey(domLetter, secondLetter) {
+  const d = toStateLetter(domLetter);
+  const s = toStateLetter(secondLetter);
+  const tk = `${d}${s}`;
+  return VALID_TEMPLATE_KEYS.has(tk) ? tk : "";
+}
+
+function deriveDomSecondFromTemplateKey(templateKey) {
+  const tk = normaliseTemplateKey(templateKey);
+  if (!tk) return { domKey: "", secondKey: "" };
+  return { domKey: tk[0], secondKey: tk[1] };
+}
+
+// ────────────────────────────────────────────────────────────────
+// Layout: coordinates (existing V4 system)
 // ────────────────────────────────────────────────────────────────
 const LAYOUT = {
   p3: {
@@ -114,7 +198,6 @@ function drawTextBox(page, font, text, box) {
   const t = normStr(text);
   if (!t.trim()) return;
 
-  // crude but predictable: estimate characters per line from width and font size
   const maxChars = Math.max(18, Math.floor(w / (size * 0.55)));
   const lines = splitToLines(t, maxChars).slice(0, maxLines);
 
@@ -131,46 +214,145 @@ function drawTextBox(page, font, text, box) {
       tx = x + (w - tw);
     }
 
-    page.drawText(line, {
-      x: tx,
-      y: cursorY,
-      size,
-      font,
-    });
+    page.drawText(line, { x: tx, y: cursorY, size, font });
     cursorY -= lineHeight;
   }
 }
 
 // ────────────────────────────────────────────────────────────────
-// Normalise payload: accept your current Botpress/Vercel schema
+// Normalise payload: V7 aliasing + self-heal for dom/second/template
 // ────────────────────────────────────────────────────────────────
 function normaliseInput(payload) {
-  // Expect: { identity, ctrl: { summary, bands }, text, workWith, questions }
-  const identity = payload?.identity || payload?.ctrl?.summary?.identity || payload?.ctrl?.summary?.identity || {};
+  // Identity (same spirit as V4, but a bit more forgiving)
+  const identity =
+    payload?.identity ||
+    payload?.ctrl?.summary?.identity ||
+    payload?.ctrl?.identity ||
+    payload?.summary?.identity ||
+    {};
 
-  // allow alt casing
   const fullName = pickFirst(identity, ["fullName", "FullName", "name", "Name"], "");
   const email = pickFirst(identity, ["email", "Email"], "");
-  const dateLabel = pickFirst(identity, ["dateLabel", "dateLbl", "date", "Date"], payload?.dateLbl || "");
+  const dateLabel = pickFirst(
+    identity,
+    ["dateLabel", "dateLbl", "date", "Date"],
+    payload?.dateLbl || ""
+  );
 
-  // ctrl summary bits (keys + labels)
-  const ctrl = payload?.ctrl || {};
-  const summary = ctrl?.summary || {};
-  const dominantKey = pickFirst(summary, ["dominantKey", "dominant", "dominant_state", "domKey"], "");
-  const secondKey = pickFirst(summary, ["secondKey", "secondState", "second_state", "second"], "");
-  const templateKey = pickFirst(summary, ["templateKey", "tplKey", "template"], "");
+  // Pull ctrl-ish roots (multiple possible “homes”)
+  const ctrl = payload?.ctrl || payload?.CTRL || {};
+  const summary =
+    ctrl?.summary ||
+    payload?.ctrlSummary ||
+    payload?.summary ||
+    payload?.ctrl?.Summary ||
+    {};
+
+  // V7: read dom/second/template from MANY aliases (V6.1-style)
+  // - accepts: ctrl.summary.*, summary.*, domSecond.*, top-level, older keys
+  let dominantRaw = pickFirstPath(payload, [
+    "ctrl.summary.dominantKey",
+    "ctrl.summary.domKey",
+    "ctrl.summary.dominant",
+    "ctrl.summary.dominantState",
+    "ctrl.summary.domState",
+    "ctrl.dominantKey",
+    "ctrl.domKey",
+    "ctrl.dominant",
+    "ctrl.dominantState",
+    "ctrlSummary.dominantKey",
+    "ctrlSummary.domKey",
+    "summary.dominantKey",
+    "summary.domKey",
+    "domSecond.domKey",
+    "domSecond.dominantKey",
+    "dominantKey",
+    "domKey",
+    "dominant",
+    "dominantState",
+    "domState",
+  ], "");
+
+  let secondRaw = pickFirstPath(payload, [
+    "ctrl.summary.secondKey",
+    "ctrl.summary.secondState",
+    "ctrl.summary.second",
+    "ctrl.secondKey",
+    "ctrl.secondState",
+    "ctrlSummary.secondKey",
+    "ctrlSummary.secondState",
+    "summary.secondKey",
+    "summary.secondState",
+    "domSecond.secondKey",
+    "domSecond.secondState",
+    "secondKey",
+    "secondState",
+    "second",
+  ], "");
+
+  let templateRaw = pickFirstPath(payload, [
+    "ctrl.summary.templateKey",
+    "ctrl.summary.tplKey",
+    "ctrl.summary.template",
+    "ctrl.templateKey",
+    "ctrl.tplKey",
+    "ctrlSummary.templateKey",
+    "summary.templateKey",
+    "domSecond.templateKey",
+    "templateKey",
+    "tplKey",
+    "template",
+  ], "");
+
+  // Normalise to letters
+  let dominantKey = toStateLetter(dominantRaw);
+  let secondKey = toStateLetter(secondRaw);
+  let templateKey = normaliseTemplateKey(templateRaw);
+
+  // Self-heal logic:
+  // 1) If templateKey exists but dom/second missing -> derive dom/second
+  if (templateKey && (!dominantKey || !secondKey)) {
+    const d = deriveDomSecondFromTemplateKey(templateKey);
+    dominantKey = dominantKey || d.domKey;
+    secondKey = secondKey || d.secondKey;
+  }
+
+  // 2) If dom+second exists but templateKey missing -> build templateKey
+  if (!templateKey && dominantKey && secondKey) {
+    templateKey = buildTemplateKey(dominantKey, secondKey);
+  }
+
+  // 3) Final safety: if templateKey still invalid -> default CT
+  if (!templateKey) templateKey = "CT";
 
   // 12-band scoring
-  const bands = ctrl?.bands || payload?.bands || payload?.ctrl12 || payload?.ctrl?.ctrl12 || {};
+  const bands =
+    ctrl?.bands ||
+    payload?.bands ||
+    payload?.ctrl12 ||
+    payload?.ctrl?.ctrl12 ||
+    payload?.ctrl?.bands ||
+    {};
 
-  // text sections (Gen output)
+  // Text sections (Gen output)
   const text = payload?.text || payload?.gen || payload?.copy || {};
 
-  // Work-with lens
-  const workWith = payload?.workWith || payload?.workwith || payload?.collab || payload?.lens || {};
+  // Work-with lens (accept more aliases)
+  const workWith =
+    payload?.workWith ||
+    payload?.workwith ||
+    payload?.work_with ||
+    payload?.collab ||
+    payload?.lens ||
+    {};
 
   // Questions meta
-  const questions = payload?.questions || payload?.ctrl?.questions || payload?.ctrl?.summary?.questions || [];
+  const questions =
+    payload?.questions ||
+    payload?.ctrl?.questions ||
+    payload?.ctrl?.summary?.questions ||
+    payload?.summary?.questions ||
+    [];
 
   return {
     raw: payload,
@@ -193,44 +375,34 @@ function normaliseInput(payload) {
 }
 
 // ────────────────────────────────────────────────────────────────
-// Choose template PDF file by templateKey (TL/RT/etc)
-// (Keep your existing mapping; extend if needed)
+// Choose template PDF file by templateKey
 // ────────────────────────────────────────────────────────────────
 function pickTemplateInfo(P) {
-  // Your repo uses /public/*.pdf
-  // Example key: "TL" → CTRL_PoC_Assessment_Profile_template_TL.pdf
-  const templateKey = P?.ctrl?.summary?.templateKey || "CT";
-  const filename = `CTRL_PoC_Assessment_Profile_template_${templateKey}.pdf`;
-  return { templateKey, filename };
+  let tk = normaliseTemplateKey(P?.ctrl?.summary?.templateKey);
+  if (!tk) tk = "CT";
+  const filename = `CTRL_PoC_Assessment_Profile_template_${tk}.pdf`;
+  return { templateKey: tk, filename };
 }
 
 // ────────────────────────────────────────────────────────────────
-// MAIN HANDLER
+// MAIN HANDLER (unchanged V4 structure)
 // ────────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   try {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
 
-    // Parse URL safely (Next/Vercel gives req.url relative)
     const url = new URL(req.url, "https://example.local");
-
-    // Payload can arrive via ?data=base64
     const dataParam = url.searchParams.get("data");
-    if (!dataParam) {
-      return res.status(400).json({ ok: false, error: "Missing ?data=" });
-    }
+    if (!dataParam) return res.status(400).json({ ok: false, error: "Missing ?data=" });
 
     const jsonStr = b64urlToUtf8(dataParam);
     const payload = safeJsonParse(jsonStr);
-    if (!payload) {
-      return res.status(400).json({ ok: false, error: "Invalid JSON in ?data=" });
-    }
+    if (!payload) return res.status(400).json({ ok: false, error: "Invalid JSON in ?data=" });
 
     const P = normaliseInput(payload);
     const info = pickTemplateInfo(P);
 
-    // Resolve PDF template path
     const pdfPath = path.join(__dirname, "..", "public", info.filename);
     const pdfBytes = await fs.readFile(pdfPath);
 
@@ -238,21 +410,16 @@ export default async function handler(req, res) {
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const pages = pdfDoc.getPages();
 
-    // Derive the report date label
     const reportDate = P.identity.dateLabel || payload?.dateLbl || "";
 
     // ────────────────────────────────────────────────────────────────
-    // MASTER DEBUG (V4)
-    // - Always logs summary to Vercel logs
-    // - debug=1 returns summary JSON
-    // - debug=2 returns full values JSON
+    // MASTER DEBUG (V7 keeps V4 probe style)
+    // debug=1 returns summary JSON
+    // debug=2 returns full values JSON
     // ────────────────────────────────────────────────────────────────
-    const debug = String(url.searchParams.get("debug") || "").trim(); // "" | "1" (summary) | "2" (full)
+    const debug = String(url.searchParams.get("debug") || "").trim();
     const wantDebug = debug === "1" || debug === "2";
 
-    // ────────────────────────────────────────────────────────────────
-    // Master probe builder (keeps you sane when payloads go feral)
-    // ────────────────────────────────────────────────────────────────
     const trunc = (v, n = 140) => {
       const s = (v === null || v === undefined) ? "" : String(v);
       if (s.length <= n) return s;
@@ -273,7 +440,7 @@ export default async function handler(req, res) {
       "domState",
       "bottomState",
       "state_tipact",
-      "frequency_tldr",        // p5 TLDR (and any extra freq TLDRs will be listed separately)
+      "frequency_tldr",
       "frequency",
       "sequence_tldr",
       "sequence",
@@ -294,7 +461,6 @@ export default async function handler(req, res) {
       const textInfo = {};
       expectedTextKeys.forEach((k) => (textInfo[k] = strInfo(text[k])));
 
-      // Capture any additional p5/frequency TLDR variants, if you add them later (e.g., frequency_tldr2)
       const freqTldrExtras = Object.keys(text)
         .filter((k) => k.toLowerCase().startsWith("frequency_tldr") && k !== "frequency_tldr")
         .sort();
@@ -307,12 +473,7 @@ export default async function handler(req, res) {
         ["C_low","C_mid","C_high","T_low","T_mid","T_high","R_low","R_mid","R_high","L_low","L_mid","L_high"]
           .filter((k) => bands && typeof bands[k] !== "undefined").length;
 
-      const missing = {
-        identity: [],
-        ctrl: [],
-        text: [],
-        workWith: [],
-      };
+      const missing = { identity: [], ctrl: [], text: [], workWith: [] };
 
       if (!P.identity?.fullName) missing.identity.push("identity.fullName");
       if (!P.identity?.email) missing.identity.push("identity.email");
@@ -332,7 +493,6 @@ export default async function handler(req, res) {
       });
 
       const lengths = {
-        // page-aligned lengths (keeps parity with your debug snippets)
         p3_exec: (text.execSummary || "").length,
         p3_tldr: (text.execSummary_tldr || "").length,
         p3_tip: (text.execSummary_tipact || "").length,
@@ -357,7 +517,7 @@ export default async function handler(req, res) {
 
       const summary = {
         ok: true,
-        where: "fill-template:v4:master_probe:summary",
+        where: "fill-template:v7:master_probe:summary",
         domSecond: {
           domKey: P.ctrl?.summary?.dominantKey || null,
           secondKey: P.ctrl?.summary?.secondKey || null,
@@ -378,7 +538,6 @@ export default async function handler(req, res) {
         },
         lengths,
         missing,
-        // high signal previews (so you can eyeball quickly)
         previews: {
           execSummary_tldr: trunc(text.execSummary_tldr),
           execSummary: trunc(text.execSummary),
@@ -394,7 +553,7 @@ export default async function handler(req, res) {
 
       const full = {
         ok: true,
-        where: "fill-template:v4:master_probe:full",
+        where: "fill-template:v7:master_probe:full",
         identity: P.identity || null,
         ctrlSummary: P.ctrl?.summary || null,
         bands: bands || null,
@@ -410,28 +569,17 @@ export default async function handler(req, res) {
 
     const MASTER = buildMasterProbe();
 
-    // Always log a compact summary (never the full text blobs) to Vercel logs.
     try {
       console.log("[fill-template] MASTER_PROBE", JSON.stringify(MASTER.summary));
     } catch (_) {
       console.log("[fill-template] MASTER_PROBE (stringify failed)");
     }
 
-    // Optional debug response (so you can open the URL and inspect quickly)
     if (wantDebug) {
       return res.status(200).json(debug === "2" ? MASTER.full : MASTER.summary);
     }
 
-    // ────────────────────────────────────────────────────────────────
-    // Page 1 overlays (name/date/email)
-    // (Your template likely already has these printed; keep minimal)
-    // ────────────────────────────────────────────────────────────────
-    // If you do have placeholders, add them here.
-    // (Leaving as-is: your earlier versions were template-driven.)
-
-    // ────────────────────────────────────────────────────────────────
     // Page 3: Exec Summary
-    // ────────────────────────────────────────────────────────────────
     const p3 = pages[2];
     if (p3 && LAYOUT.p3) {
       drawTextBox(p3, font, P.text.execSummary_tldr, LAYOUT.p3.execTLDR);
@@ -439,9 +587,7 @@ export default async function handler(req, res) {
       drawTextBox(p3, font, P.text.execSummary_tipact, LAYOUT.p3.tipAct);
     }
 
-    // ────────────────────────────────────────────────────────────────
     // Page 4: Dominant / State narrative
-    // ────────────────────────────────────────────────────────────────
     const p4 = pages[3];
     if (p4 && LAYOUT.p4) {
       drawTextBox(p4, font, P.text.state_tldr, LAYOUT.p4.tldr);
@@ -450,18 +596,14 @@ export default async function handler(req, res) {
       drawTextBox(p4, font, P.text.state_tipact, LAYOUT.p4.act);
     }
 
-    // ────────────────────────────────────────────────────────────────
     // Page 5: Frequency
-    // ────────────────────────────────────────────────────────────────
     const p5 = pages[4];
     if (p5 && LAYOUT.p5) {
       drawTextBox(p5, font, P.text.frequency_tldr, LAYOUT.p5.tldr);
       drawTextBox(p5, font, P.text.frequency, LAYOUT.p5.main);
     }
 
-    // ────────────────────────────────────────────────────────────────
     // Page 6: Sequence
-    // ────────────────────────────────────────────────────────────────
     const p6 = pages[5];
     if (p6 && LAYOUT.p6) {
       drawTextBox(p6, font, P.text.sequence_tldr, LAYOUT.p6.tldr);
@@ -469,20 +611,15 @@ export default async function handler(req, res) {
       drawTextBox(p6, font, P.text.sequence_tipact, LAYOUT.p6.act);
     }
 
-    // ────────────────────────────────────────────────────────────────
     // Page 7: Themes
-    // ────────────────────────────────────────────────────────────────
     const p7 = pages[6];
     if (p7 && LAYOUT.p7) {
       drawTextBox(p7, font, P.text.theme_tldr, LAYOUT.p7.topTLDR);
       drawTextBox(p7, font, P.text.theme, LAYOUT.p7.top);
-      // optional low-theme blocks (kept zero-length in your current payload)
       drawTextBox(p7, font, P.text.theme_tipact, LAYOUT.p7.tip);
     }
 
-    // ────────────────────────────────────────────────────────────────
     // Page 9: Action Anchor
-    // ────────────────────────────────────────────────────────────────
     const p9 = pages[8];
     if (p9 && LAYOUT.p9) {
       drawTextBox(p9, font, P.text.act_anchor, LAYOUT.p9.anchor);
