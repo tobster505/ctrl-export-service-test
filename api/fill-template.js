@@ -1,8 +1,8 @@
 /**
- * CTRL PoC Export Service · fill-template (V9)
+ * CTRL PoC Export Service · fill-template (V10)
  * Place at: /api/fill-template.js  (ctrl-poc-service)
  *
- * Fixes in V8:
+ * Fixes through V10:
  * 1) Output filename: PoC_Profile_{Firstname}_{Surname}_{Date}.pdf
  * 2) URL coordinate overrides (full) supported for ALL boxes (TLDR/main/action, etc.)
  * 3) Header on pages 2–10 becomes just "FullName" (by masking template header text)
@@ -367,25 +367,28 @@ function makeSpiderChartUrl12(bandsRaw) {
   ];
 
   const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
-  const maxVal = Math.max(...out, 1);
-const rMax = Math.ceil(maxVal * 1.1 * 10) / 10; // +10% headroom, round to 0.1
+
+  // Normalise to 0..1 so the 12-spoke fallback is always readable
+  const maxVal = Math.max(...vals, 1);
+  const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
+
   const cfg = {
     type: "radar",
     data: {
       labels,
       datasets: [{
         label: "",
-        data: out,
+        data: scaled,
         fill: true,
         borderWidth: 3,
         pointRadius: 0,
 
         // Curved/rounded line
-        tension: 0.25,
+        tension: 0.30,
         borderJoinStyle: "round",
         capBezierPoints: true,
 
-        backgroundColor: "rgba(184, 15, 112, 0.25)",
+        backgroundColor: "rgba(184, 15, 112, 0.20)",
         borderColor: "rgba(66, 37, 135, 0.95)",
       }],
     },
@@ -393,12 +396,12 @@ const rMax = Math.ceil(maxVal * 1.1 * 10) / 10; // +10% headroom, round to 0.1
       plugins: { legend: { display: false } },
       scales: {
         r: {
-          min: 0, max: rMax,
+          min: 0,
+          max: 1,
           ticks: { display: false },
-          grid: { display: true },
-          angleLines: { display: true },
-          pointLabels: { display: true,
-                          font: { size: 20, weight: "bold" },
+          grid: { display: false },
+          angleLines: { display: false },
+          pointLabels: { display: false },
         },
       },
     },
@@ -422,6 +425,10 @@ const rMax = Math.ceil(maxVal * 1.1 * 10) / 10; // +10% headroom, round to 0.1
  *   - low contributes toward previous transition spoke
  *   - mid contributes toward the state spoke
  *   - high contributes toward next transition spoke
+ *
+ * Rendering:
+ *   Uses RAW magnitudes (no 0..1 normalisation), with r.max set dynamically,
+ *   so the shape does not “blob” just because one value is large.
  */
 function makeSpiderChartUrl8Directional(bandsRaw) {
   const n = (k) => Number(bandsRaw?.[k] || 0);
@@ -437,7 +444,7 @@ function makeSpiderChartUrl8Directional(bandsRaw) {
     const prevIdx  = { C: 7, T: 1, R: 3, L: 5 }[stateKey]; // towards previous state
     const nextIdx  = { C: 1, T: 3, R: 5, L: 7 }[stateKey]; // towards next state
 
-    // proportional drift (ties auto-resolve because equal values yield equal proportions)
+    // Proportional drift (ties auto-resolve because equal values yield equal proportions)
     out[prevIdx]  += total * (low  / total);
     out[stateIdx] += total * (mid  / total);
     out[nextIdx]  += total * (high / total);
@@ -451,9 +458,9 @@ function makeSpiderChartUrl8Directional(bandsRaw) {
   // Only label main states; transitions blank
   const labels = ["C", "", "T", "", "R", "", "L", ""];
 
-  // Normalise to 0..1 for stable rendering
+  // Dynamic max with headroom so the shape is honest but not cramped
   const maxVal = Math.max(...out, 1);
-  const scaled = out.map((v) => (maxVal > 0 ? v / maxVal : 0));
+  const rMax = Math.ceil(maxVal * 1.10 * 10) / 10; // +10% headroom, round to 0.1
 
   const cfg = {
     type: "radar",
@@ -461,13 +468,13 @@ function makeSpiderChartUrl8Directional(bandsRaw) {
       labels,
       datasets: [{
         label: "",
-        data: scaled,
+        data: out,
         fill: true,
         borderWidth: 4,
         pointRadius: 0,
 
-        // Curved/rounded line (like your example)
-        tension: 0.45,
+        // Curved/rounded line (avoid “blob” overshoot)
+        tension: 0.25,
         borderJoinStyle: "round",
         capBezierPoints: true,
 
@@ -479,7 +486,8 @@ function makeSpiderChartUrl8Directional(bandsRaw) {
       plugins: { legend: { display: false } },
       scales: {
         r: {
-          min: 0, max: 1,
+          min: 0,
+          max: rMax,
           ticks: { display: false },
           grid: { display: false },
           angleLines: { display: false },
@@ -851,7 +859,7 @@ function buildMasterProbe(P, domSecond) {
 
   return {
     ok: true,
-    where: "fill-template:v8:master_probe:summary",
+    where: "fill-template:v10:master_probe:summary",
     domSecond: safeJson(domSecond),
 
     // ✅ new: chart URLs you can store in Sheets/Drive
@@ -1008,7 +1016,7 @@ if (headerName) {
         try {
           await embedRadarFromBandsOrUrl(pdfDoc, p5, L.p5chart.chart, P.bands || {}, P["p5:chartUrl"]);
         } catch (e) {
-          console.warn("[fill-template:v8] Radar chart skipped:", e?.message || String(e));
+          console.warn("[fill-template:v10] Radar chart skipped:", e?.message || String(e));
         }
       }
     }
@@ -1049,7 +1057,7 @@ if (headerName) {
     res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
     res.status(200).send(Buffer.from(outBytes));
   } catch (err) {
-    console.error("[fill-template:v8] CRASH", err);
+    console.error("[fill-template:v10] CRASH", err);
     res.status(500).json({
       ok: false,
       error: err?.message || String(err),
