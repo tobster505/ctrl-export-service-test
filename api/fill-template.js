@@ -357,7 +357,7 @@ function computeDomAndSecondKeys(P) {
 
 /**
  * 12-spoke fallback (raw bands) — keep for storing in Sheets/Drive if needed.
- * (Unchanged from V8)
+ * (Unchanged behaviour; kept stable.)
  */
 function makeSpiderChartUrl12(bandsRaw) {
   const labels = [
@@ -390,7 +390,7 @@ function makeSpiderChartUrl12(bandsRaw) {
           ticks: { display: false },
           grid: { display: false },
           angleLines: { display: false },
-          pointLabels: { display: false },
+          pointLabels: { display: false }, // hidden in fallback view
         },
       },
     },
@@ -405,11 +405,10 @@ function makeSpiderChartUrl12(bandsRaw) {
  * Spokes: C, C→T, T, T→R, R, R→L, L, L→C
  * Labels show only: C, T, R, L (transition spokes are blank labels)
  *
- * Tie rules:
- * - Find max among [low, mid, high]
- * - If single winner: allocate total to that target
- * - If 2-way tie: split total 50/50 across the two tied targets
- * - If 3-way tie: split total 1/3 each across all three targets
+ * Tie maths (fully handled):
+ * - If one winner (low/mid/high): allocate TOTAL to that target
+ * - If 2-way tie: split TOTAL 50/50 across the tied targets
+ * - If 3-way tie: split TOTAL 1/3 each
  *
  * Targets:
  * - low  -> previous transition spoke
@@ -428,7 +427,7 @@ function makeSpiderChartUrl8Directional(bandsRaw) {
 
     const mx = Math.max(low, mid, high);
 
-    // Which are tied for max?
+    // Determine tie set (strict equality is fine because your inputs are deterministic decimals)
     const winners = [];
     if (low === mx) winners.push("low");
     if (mid === mx) winners.push("mid");
@@ -436,26 +435,17 @@ function makeSpiderChartUrl8Directional(bandsRaw) {
 
     const share = total / winners.length;
 
-    // Map dominance target -> 8-spoke index
-    // State axis indices:
     const stateIdx = { C: 0, T: 2, R: 4, L: 6 }[stateKey];
-
-    // Previous transition:
-    // C low -> L→C (7), T low -> C→T (1), R low -> T→R (3), L low -> R→L (5)
-    const prevIdx = { C: 7, T: 1, R: 3, L: 5 }[stateKey];
-
-    // Next transition:
-    // C high -> C→T (1), T high -> T→R (3), R high -> R→L (5), L high -> L→C (7)
-    const nextIdx = { C: 1, T: 3, R: 5, L: 7 }[stateKey];
+    const prevIdx  = { C: 7, T: 1, R: 3, L: 5 }[stateKey]; // towards previous state
+    const nextIdx  = { C: 1, T: 3, R: 5, L: 7 }[stateKey]; // towards next state
 
     for (const w of winners) {
-      if (w === "low") out[prevIdx] += share;
-      if (w === "mid") out[stateIdx] += share;
-      if (w === "high") out[nextIdx] += share;
+      if (w === "low")  out[prevIdx]  += share;
+      if (w === "mid")  out[stateIdx] += share;
+      if (w === "high") out[nextIdx]  += share;
     }
   };
 
-  // Pull sub-states
   addState("C", n("C_low"), n("C_mid"), n("C_high"));
   addState("T", n("T_low"), n("T_mid"), n("T_high"));
   addState("R", n("R_low"), n("R_mid"), n("R_high"));
@@ -464,6 +454,7 @@ function makeSpiderChartUrl8Directional(bandsRaw) {
   // Only label main states; transitions blank
   const labels = ["C", "", "T", "", "R", "", "L", ""];
 
+  // Scale to 0..1 so the chart always fits nicely
   const maxVal = Math.max(...out, 1);
   const scaled = out.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
@@ -513,6 +504,7 @@ async function embedRemoteImage(pdfDoc, url) {
   if (sig.startsWith("\x89PNG")) return await pdfDoc.embedPng(buf);
   if (sig.startsWith("\xff\xd8")) return await pdfDoc.embedJpg(buf);
 
+  // fallback
   try { return await pdfDoc.embedPng(buf); }
   catch { return await pdfDoc.embedJpg(buf); }
 }
@@ -520,38 +512,18 @@ async function embedRemoteImage(pdfDoc, url) {
 async function embedRadarFromBandsOrUrl(pdfDoc, page, box, bandsRaw, chartUrl) {
   if (!pdfDoc || !page || !box) return;
 
-  // Prefer explicit chart URL if provided (Botpress can send 8-spoke if you want)
+  // Prefer explicit chart URL if provided
   let url = String(chartUrl || "").trim();
 
   if (!url) {
     const hasAny =
       bandsRaw && typeof bandsRaw === "object" &&
       Object.values(bandsRaw).some((v) => Number(v) > 0);
+
     if (!hasAny) return;
 
     // ✅ Default for user-facing PDF: 8-spoke directional chart
     url = makeSpiderChartUrl8Directional(bandsRaw);
-
-    // NOTE: We keep makeSpiderChartUrl12(bandsRaw) available for fallback/storage elsewhere.
-    // If you later want Vercel to also *return* url12 in debug, we can add it to the probe.
-  }
-
-  const img = await embedRemoteImage(pdfDoc, url);
-  if (!img) return;
-
-  const H = page.getHeight();
-  page.drawImage(img, { x: box.x, y: H - box.y - box.h, width: box.w, height: box.h });
-}
-
-
-  // Prefer explicit chart URL if provided
-  let url = S(chartUrl).trim();
-  if (!url) {
-    const hasAny =
-      bandsRaw && typeof bandsRaw === "object" &&
-      Object.values(bandsRaw).some((v) => Number(v) > 0);
-    if (!hasAny) return;
-    url = makeSpiderChartUrl12(bandsRaw);
   }
 
   const img = await embedRemoteImage(pdfDoc, url);
