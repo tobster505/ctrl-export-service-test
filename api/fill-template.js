@@ -367,22 +367,21 @@ function makeSpiderChartUrl12(bandsRaw) {
   ];
 
   const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
-  const maxVal = Math.max(...vals, 1);
-  const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
-
+  const maxVal = Math.max(...out, 1);
+const rMax = Math.ceil(maxVal * 1.1 * 10) / 10; // +10% headroom, round to 0.1
   const cfg = {
     type: "radar",
     data: {
       labels,
       datasets: [{
         label: "",
-        data: scaled,
+        data: out,
         fill: true,
         borderWidth: 3,
         pointRadius: 0,
 
         // Curved/rounded line
-        tension: 0.35,
+        tension: 0.25,
         borderJoinStyle: "round",
         capBezierPoints: true,
 
@@ -394,11 +393,12 @@ function makeSpiderChartUrl12(bandsRaw) {
       plugins: { legend: { display: false } },
       scales: {
         r: {
-          min: 0, max: 1,
+          min: 0, max: rMax,
           ticks: { display: false },
-          grid: { display: false },
-          angleLines: { display: false },
-          pointLabels: { display: false },
+          grid: { display: true },
+          angleLines: { display: true },
+          pointLabels: { display: true,
+                          font: { size: 20, weight: "bold" },
         },
       },
     },
