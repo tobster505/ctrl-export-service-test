@@ -530,16 +530,16 @@ function makeSpiderChartUrl4WithDots(bandsRaw) {
     options: {
       plugins: { legend: { display: false } },
       elements: {
-        line: { tension: 0.45 },
+        line: { tension: 0.15 },
       },
       scales: {
         r: {
           min: 0,
           max: 1,
-          startAngle: -90, // degrees; keeps Concealed at "north"
+          startAngle: -1.5707963267948966
           ticks: { display: false },
-          grid: { display: true, lineWidth: 1.4 },
-          angleLines: { display: true, lineWidth: 1.4 },
+          grid: { display: true, lineWidth: 1.8 },
+          angleLines: { display: true, lineWidth: 1.8 },
           pointLabels: {
             display: true,
             font: { size: 22, weight: "bold" },
