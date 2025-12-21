@@ -533,18 +533,23 @@ function makeSpiderChartUrl4WithDots(bandsRaw) {
         line: { tension: 0.15 },
       },
       scales: {
-        r: {
-          min: 0,
-          max: 1,
-          startAngle: -1.5707963267948966
-          ticks: { display: false },
-          grid: { display: true, lineWidth: 1.8 },
-          angleLines: { display: true, lineWidth: 1.8 },
-          pointLabels: {
-            display: true,
-            font: { size: 22, weight: "bold" },
-          },
-        },
+r: {
+  min: 0,
+  max: 1,
+
+  // ✅ radians (not degrees)
+  // -PI/2 = put first label (Concealed) at "north"
+  startAngle: -1.5707963267948966,
+
+  ticks: { display: false },
+  grid: { display: true, lineWidth: 1.4 },
+  angleLines: { display: true, lineWidth: 1.4 },
+  pointLabels: {
+    display: true,
+    font: { size: 22, weight: "bold" },
+  },
+},
+
       },
     },
   };
