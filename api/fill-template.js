@@ -353,47 +353,42 @@ function computeDomAndSecondKeys(P) {
   return { domKey, secondKey, templateKey: `${domKey}${secondKey}` };
 }
 
-/* ───────── chart: 12-spoke polar area (state-shaded + 4 labels) ───────── */
-
 function makeSpiderChartUrl12(bandsRaw) {
-  // Keep data in this exact order so "C_mid" is your first wedge.
-  const labels = [
+  // Keys used to pull data (do NOT show these)
+  const keys = [
     "C_mid","C_high","T_low","T_mid","T_high",
     "R_low","R_mid","R_high",
     "L_low","L_mid","L_high",
     "C_low",
   ];
 
-  const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
+  // Labels shown on the chart (only 4, rest blank)
+  const displayLabels = [
+    "Concealed", "", "", "Triggered", "",
+    "", "Regulated", "",
+    "", "Lead", "", ""
+  ];
 
-  // Keep your existing "shape" behaviour (relative scaling to max=1).
-  // If later you want absolute, we can change this in one line.
+  const vals = keys.map((k) => Number(bandsRaw?.[k] || 0));
+
+  // relative/shape scaling (as you had)
   const maxVal = Math.max(...vals, 1);
   const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
-  // Only show 4 labels (everything else blank).
-  const labelMap = {
-    C_mid: "Concealed",
-    T_mid: "Triggered",
-    R_mid: "Regulated",
-    L_mid: "Lead",
-  };
-
-  // Shade by state so boundaries are visible (e.g., T_high → R_low).
-  // (Same hue family, different opacity = “shades”, not rainbow.)
-  const colours = labels.map((k) => {
-    const s = k[0]; // C/T/R/L
-    if (s === "C") return "rgba(184,  15, 112, 0.18)"; // Concealed (lightest)
-    if (s === "T") return "rgba(184,  15, 112, 0.32)"; // Triggered (stronger)
-    if (s === "R") return "rgba(184,  15, 112, 0.24)"; // Regulated (mid)
-    if (s === "L") return "rgba(184,  15, 112, 0.28)"; // Lead (mid-strong)
+  // Shade by state boundary (optional but helpful)
+  const colours = keys.map((k) => {
+    const s = k[0];
+    if (s === "C") return "rgba(184,  15, 112, 0.18)";
+    if (s === "T") return "rgba(184,  15, 112, 0.32)";
+    if (s === "R") return "rgba(184,  15, 112, 0.24)";
+    if (s === "L") return "rgba(184,  15, 112, 0.28)";
     return "rgba(184, 15, 112, 0.25)";
   });
 
   const cfg = {
     type: "polarArea",
     data: {
-      labels,
+      labels: displayLabels,     // ✅ what gets printed
       datasets: [{
         data,
         backgroundColor: colours,
@@ -403,27 +398,22 @@ function makeSpiderChartUrl12(bandsRaw) {
     options: {
       plugins: { legend: { display: false } },
 
-      // ✅ 15° anticlockwise rotation so the FIRST wedge (C_mid) is centred at North.
-      // For 12 wedges: wedge width = 30°, half = 15°.
-      // If startAngle is where the wedge STARTS, centring at North = -90° - 15°.
-      startAngle: -1.8325957145940461, // (-Math.PI/2 - Math.PI/12)
+      // ✅ 15° anticlockwise so the FIRST wedge (C_mid) is centred at North
+      startAngle: -1.8325957145940461, // -Math.PI/2 - Math.PI/12
 
       scales: {
         r: {
           min: 0,
           max: 1,
           ticks: { display: false },
-
-          // Keep grid/lines for readability (tweak if you want cleaner later)
           grid: { display: true },
           angleLines: { display: true },
 
-          // ✅ 4 big bold labels only
+          // ✅ make the 4 labels bigger/bold
           pointLabels: {
             display: true,
-            padding: 10,
+            padding: 12,
             font: { size: 18, weight: "bold" },
-            callback: (label) => (labelMap[label] || ""),
           },
         },
       },
@@ -433,6 +423,7 @@ function makeSpiderChartUrl12(bandsRaw) {
   const enc = encodeURIComponent(JSON.stringify(cfg));
   return `https://quickchart.io/chart?c=${enc}&format=png&width=900&height=900&backgroundColor=transparent&version=4`;
 }
+
 
 async function embedRemoteImage(pdfDoc, url) {
   if (!url) return null;
