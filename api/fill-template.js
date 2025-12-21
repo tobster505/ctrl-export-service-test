@@ -353,31 +353,21 @@ function computeDomAndSecondKeys(P) {
   return { domKey, secondKey, templateKey: `${domKey}${secondKey}` };
 }
 
-/* ───────── radar chart embed (QuickChart) ───────── */
+/* ───────── radar/spider chart (V9 – clean 4-state + substate dots, keeps 12-band fallback) ───────── */
+
+/**
+ * 12-spoke fallback (raw bands) — KEEP for storage/diagnostics.
+ * Fixes prior bug (used undefined "out").
+ */
 function makeSpiderChartUrl12(bandsRaw) {
-  // Order is fixed to match your scoring model
-  const keys = [
-    "C_low","C_mid","C_high",
-    "T_low","T_mid","T_high",
-    "R_low","R_mid","R_high",
-    "L_low","L_mid","L_high",
-  ];
-
-  // ✅ Show only 4 axis labels (full names) on the "mid" spokes
-  // Chart.js radar requires a label per point; blanks hide the rest.
   const labels = [
-    "", "Concealed", "",
-    "", "Triggered", "",
-    "", "Regulated", "",
-    "", "Lead", "",
+    "C_low","C_mid","C_high","T_low","T_mid","T_high",
+    "R_low","R_mid","R_high","L_low","L_mid","L_high",
   ];
 
-  const vals = keys.map((k) => Number(bandsRaw?.[k] || 0));
-
-  // Keep the internal radar normalised to 0–1 for visual stability across users.
-  // (Your narrative + exact numbers still come from the raw bands.)
+  const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
   const maxVal = Math.max(...vals, 1);
-  const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
+  const rMax = Math.ceil(maxVal * 1.1 * 10) / 10; // +10% headroom, round to 0.1
 
   const cfg = {
     type: "radar",
@@ -385,52 +375,184 @@ function makeSpiderChartUrl12(bandsRaw) {
       labels,
       datasets: [{
         label: "",
-        data: scaled,
+        data: vals,
         fill: true,
-
-        // ✅ clearer / bolder line
-        borderWidth: 4,
+        borderWidth: 3,
         pointRadius: 0,
-
-        // basics (safer than curvy): set to 0 for straight edges
-        tension: 0,
-
-        backgroundColor: "rgba(184, 15, 112, 0.28)",
-        borderColor: "rgba(66, 37, 135, 0.95)",
+        tension: 0.25,
+        borderJoinStyle: "round",
+        capBezierPoints: true,
+        backgroundColor: "rgba(184, 15, 112, 0.20)",
+        borderColor: "rgba(66, 37, 135, 0.85)",
       }],
     },
-options: {
-  plugins: { legend: { display: false } },
-  scales: {
-    r: {
-      min: 0,
-      max: 1,
-
-      // ✅ lock the compass:
-      // first label = North (top). With labels ordered:
-      // ["Concealed","Triggered","Regulated","Lead"]
-      // you get N/E/S/W exactly.
-      startAngle: -90,
-
-      ticks: { display: false },
-
-      // keep a light frame so users can orient, but avoid clutter
-      grid: { display: true },
-      angleLines: { display: true },
-
-      pointLabels: {
-        display: true,
-        font: { size: 18, weight: "bold" },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        r: {
+          min: 0, max: rMax,
+          ticks: { display: false },
+          grid: { display: true },
+          angleLines: { display: true },
+          pointLabels: { display: false },
+        },
       },
     },
-  },
-},
-
+  };
 
   const enc = encodeURIComponent(JSON.stringify(cfg));
-  // ✅ force Chart.js v4 so radar options behave consistently
-  return `https://quickchart.io/chart?c=${enc}&format=png&width=800&height=800&backgroundColor=transparent&version=4`;
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=900&height=900&backgroundColor=transparent&version=4`;
 }
+
+/**
+ * User-facing 4-state radar:
+ * - Shape is based on totals: sum(low, mid, high) for each state
+ * - Rounded peaks via tension + round joins
+ * - Sub-state nuance via a dot dataset:
+ *    low  -> dot pulled slightly inward
+ *    mid  -> dot at the same radius
+ *    high -> dot pushed slightly outward
+ *
+ * Tie-breaking dominant sub-state:
+ * - If a tie occurs:
+ *   1) prefer the one with later "lastSeen" if supplied in bandsRaw.__lastSeen (optional)
+ *   2) otherwise prefer HIGH over MID over LOW (deterministic, avoids random wobble)
+ */
+function makeSpiderChartUrl4WithDots(bandsRaw) {
+  const n = (k) => Number(bandsRaw?.[k] || 0);
+
+  // Optional: pass last-seen indices from your scoring workflow if you ever want:
+  // bands.__lastSeen = { "T_mid": 5, "T_high": 2, ... }
+  const lastSeen =
+    (bandsRaw && typeof bandsRaw === "object" && bandsRaw.__lastSeen && typeof bandsRaw.__lastSeen === "object")
+      ? bandsRaw.__lastSeen
+      : null;
+
+  const pickDominant = (aKey, bKey, cKey) => {
+    const a = n(aKey), b = n(bKey), c = n(cKey);
+    const max = Math.max(a, b, c);
+
+    const tied = [];
+    if (a === max) tied.push(aKey);
+    if (b === max) tied.push(bKey);
+    if (c === max) tied.push(cKey);
+
+    if (tied.length === 1) return tied[0];
+
+    // 1) Prefer later lastSeen if provided
+    if (lastSeen) {
+      let best = tied[0];
+      let bestIdx = Number.isFinite(+lastSeen[best]) ? +lastSeen[best] : -1;
+      for (const k of tied.slice(1)) {
+        const idx = Number.isFinite(+lastSeen[k]) ? +lastSeen[k] : -1;
+        if (idx > bestIdx) { best = k; bestIdx = idx; }
+      }
+      return best;
+    }
+
+    // 2) Deterministic fallback: HIGH > MID > LOW
+    const rank = (k) => (k.endsWith("_high") ? 3 : k.endsWith("_mid") ? 2 : 1);
+    tied.sort((x, y) => rank(y) - rank(x));
+    return tied[0];
+  };
+
+  const totals = {
+    C: n("C_low") + n("C_mid") + n("C_high"),
+    T: n("T_low") + n("T_mid") + n("T_high"),
+    R: n("R_low") + n("R_mid") + n("R_high"),
+    L: n("L_low") + n("L_mid") + n("L_high"),
+  };
+
+  const dom = {
+    C: pickDominant("C_low", "C_mid", "C_high"),
+    T: pickDominant("T_low", "T_mid", "T_high"),
+    R: pickDominant("R_low", "R_mid", "R_high"),
+    L: pickDominant("L_low", "L_mid", "L_high"),
+  };
+
+  // Scale main values 0..1 (stable visuals across different total magnitudes)
+  const maxTotal = Math.max(totals.C, totals.T, totals.R, totals.L, 1);
+  const base = [
+    totals.C / maxTotal,
+    totals.T / maxTotal,
+    totals.R / maxTotal,
+    totals.L / maxTotal,
+  ];
+
+  // Dot offset by dominant sub-state: low in, mid same, high out
+  const dotOffset = (subKey) => (subKey.endsWith("_low") ? -0.08 : subKey.endsWith("_high") ? 0.08 : 0);
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+  const dots = [
+    clamp01(base[0] + dotOffset(dom.C)),
+    clamp01(base[1] + dotOffset(dom.T)),
+    clamp01(base[2] + dotOffset(dom.R)),
+    clamp01(base[3] + dotOffset(dom.L)),
+  ];
+
+  // ✅ Orientation: Concealed at North, Triggered East, Regulated South, Lead West
+  // Chart.js radar uses first label at top by default, but we hard-set startAngle anyway.
+  const labels = ["Concealed", "Triggered", "Regulated", "Lead"];
+
+  const cfg = {
+    type: "radar",
+    data: {
+      labels,
+      datasets: [
+        // Main filled shape
+        {
+          label: "",
+          data: base,
+          fill: true,
+          borderWidth: 4,
+          pointRadius: 0,
+          tension: 0.45,
+          borderJoinStyle: "round",
+          capBezierPoints: true,
+          backgroundColor: "rgba(184, 15, 112, 0.18)",
+          borderColor: "rgba(66, 37, 135, 0.95)",
+        },
+
+        // Dot markers for dominant sub-state
+        {
+          label: "",
+          data: dots,
+          fill: false,
+          showLine: false,
+          pointRadius: 7,
+          pointHoverRadius: 7,
+          pointBorderWidth: 2,
+          pointBackgroundColor: "rgba(66, 37, 135, 0.95)",
+          pointBorderColor: "rgba(255, 255, 255, 1)",
+        },
+      ],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      elements: {
+        line: { tension: 0.45 },
+      },
+      scales: {
+        r: {
+          min: 0,
+          max: 1,
+          startAngle: -90, // degrees; keeps Concealed at "north"
+          ticks: { display: false },
+          grid: { display: true, lineWidth: 1.4 },
+          angleLines: { display: true, lineWidth: 1.4 },
+          pointLabels: {
+            display: true,
+            font: { size: 22, weight: "bold" },
+          },
+        },
+      },
+    },
+  };
+
+  const enc = encodeURIComponent(JSON.stringify(cfg));
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=900&height=900&backgroundColor=transparent&version=4`;
+}
+
 async function embedRemoteImage(pdfDoc, url) {
   if (!url) return null;
 
@@ -443,6 +565,7 @@ async function embedRemoteImage(pdfDoc, url) {
   if (sig.startsWith("\x89PNG")) return await pdfDoc.embedPng(buf);
   if (sig.startsWith("\xff\xd8")) return await pdfDoc.embedJpg(buf);
 
+  // fallback
   try { return await pdfDoc.embedPng(buf); }
   catch { return await pdfDoc.embedJpg(buf); }
 }
@@ -451,13 +574,17 @@ async function embedRadarFromBandsOrUrl(pdfDoc, page, box, bandsRaw, chartUrl) {
   if (!pdfDoc || !page || !box) return;
 
   // Prefer explicit chart URL if provided
-  let url = S(chartUrl).trim();
+  let url = String(chartUrl || "").trim();
+
   if (!url) {
     const hasAny =
       bandsRaw && typeof bandsRaw === "object" &&
       Object.values(bandsRaw).some((v) => Number(v) > 0);
+
     if (!hasAny) return;
-    url = makeSpiderChartUrl12(bandsRaw);
+
+    // ✅ Default for user-facing PDF: 4-state + dots
+    url = makeSpiderChartUrl4WithDots(bandsRaw);
   }
 
   const img = await embedRemoteImage(pdfDoc, url);
@@ -466,6 +593,7 @@ async function embedRadarFromBandsOrUrl(pdfDoc, page, box, bandsRaw, chartUrl) {
   const H = page.getHeight();
   page.drawImage(img, { x: box.x, y: H - box.y - box.h, width: box.w, height: box.h });
 }
+
 
 /* ───────── default layout (supports your URL override scheme) ───────── */
 const DEFAULT_LAYOUT = {
