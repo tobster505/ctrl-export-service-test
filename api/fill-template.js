@@ -353,11 +353,15 @@ function computeDomAndSecondKeys(P) {
   return { domKey, secondKey, templateKey: `${domKey}${secondKey}` };
 }
 
-/* ───────── radar chart embed (QuickChart) ───────── */
 function makeSpiderChartUrl12(bandsRaw) {
+  // Reordered so "north" (first label) is C_mid
+  // Clockwise order from there:
+  // C_mid → C_high → T_low → T_mid → T_high → R_low → R_mid → R_high → L_low → L_mid → L_high → C_low
   const labels = [
-    "C_low","C_mid","C_high","T_low","T_mid","T_high",
-    "R_low","R_mid","R_high","L_low","L_mid","L_high",
+    "C_mid","C_high","T_low","T_mid","T_high",
+    "R_low","R_mid","R_high",
+    "L_low","L_mid","L_high",
+    "C_low",
   ];
 
   const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
@@ -394,6 +398,7 @@ function makeSpiderChartUrl12(bandsRaw) {
   const enc = encodeURIComponent(JSON.stringify(cfg));
   return `https://quickchart.io/chart?c=${enc}&format=png&width=800&height=800&backgroundColor=transparent`;
 }
+
 
 async function embedRemoteImage(pdfDoc, url) {
   if (!url) return null;
