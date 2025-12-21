@@ -354,9 +354,7 @@ function computeDomAndSecondKeys(P) {
 }
 
 function makeSpiderChartUrl12(bandsRaw) {
-  // Reordered so "north" (first label) is C_mid
-  // Clockwise order from there:
-  // C_mid → C_high → T_low → T_mid → T_high → R_low → R_mid → R_high → L_low → L_mid → L_high → C_low
+  // You said: NORTH should be C_mid
   const labels = [
     "C_mid","C_high","T_low","T_mid","T_high",
     "R_low","R_mid","R_high",
@@ -365,19 +363,18 @@ function makeSpiderChartUrl12(bandsRaw) {
   ];
 
   const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
+
+  // If you want the “shape view” (relative): scale to max=1
   const maxVal = Math.max(...vals, 1);
   const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
   const cfg = {
-    type: "radar",
+    type: "polarArea",
     data: {
       labels,
       datasets: [{
-        label: "",
         data: scaled,
-        fill: true,
         borderWidth: 0,
-        pointRadius: 0,
         backgroundColor: "rgba(184, 15, 112, 0.35)",
       }],
     },
@@ -385,19 +382,21 @@ function makeSpiderChartUrl12(bandsRaw) {
       plugins: { legend: { display: false } },
       scales: {
         r: {
-          min: 0, max: 1,
+          min: 0,
+          max: 1,
           ticks: { display: false },
-          grid: { display: false },
-          angleLines: { display: false },
-          pointLabels: { display: false },
+          grid: { display: true },
+          angleLines: { display: true },
+          pointLabels: { display: false }, // set true if you want labels on spokes
         },
       },
     },
   };
 
   const enc = encodeURIComponent(JSON.stringify(cfg));
-  return `https://quickchart.io/chart?c=${enc}&format=png&width=800&height=800&backgroundColor=transparent`;
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=900&height=900&backgroundColor=transparent&version=4`;
 }
+
 
 
 async function embedRemoteImage(pdfDoc, url) {
