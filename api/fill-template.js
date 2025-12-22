@@ -541,12 +541,12 @@ const DEFAULT_LAYOUT = {
       collabL: { x: 320, y: 650, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
     },
 
-// Page 9 (action anchor)
-p9: {
-  hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1 },
-  actAnchor: { x: 55, y: 760, w: 950, h: 180, size: 20, align: "left", maxLines: 8 },
-},
-
+   // Page 9 (action anchor)
+   p9: {
+     hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1 },
+     actAnchor: { x: 55, y: 760, w: 950, h: 180, size: 20, align: "left", maxLines: 8 },
+   },
+  },
 };
 
 function deepMerge(target, source) {
