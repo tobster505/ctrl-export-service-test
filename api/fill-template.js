@@ -677,9 +677,35 @@ const p4_act = S(text.state_tipact || "");
   const chartUrl = S(d.chartUrl || d.chart?.url || d["p5:chart"] || "");
 
   // p6
-  const p6_tldr = formatTLDR(text.sequence_tldr || "");
-  const p6_main = S(text.sequence || "");
-  const p6_act  = S(text.sequence_tipact || "");
+// p6 (Option B: Sequence split into 3 parts + tip/action)
+const p6_tldr = formatTLDR(text.sequence_tldr || "");
+
+const p6_overview = S(
+  text.sequence_overview ||
+  text.seq_overview ||
+  ""
+);
+
+const p6_direction = S(
+  text.sequence_direction ||
+  text.seq_direction ||
+  ""
+);
+
+const p6_contrast = S(
+  text.sequence_contrast ||
+  text.seq_contrast ||
+  ""
+);
+
+// Combine into one rendered block (3 short paragraphs)
+const p6_main = [p6_overview, p6_direction, p6_contrast]
+  .map((v) => S(v).trim())
+  .filter(Boolean)
+  .join("\n\n");
+
+const p6_act = S(text.sequence_tipact || "");
+
 
   // p7
   const p7_tldr = formatTLDR(text.theme_tldr || text.themesTop_tldr || "");
@@ -782,7 +808,8 @@ function buildMasterProbe(P, domSecond) {
   if (!P["p3:act"])  missing.text.push("text.execSummary_tipact");
 
   if (!P["p5:main"]) missing.text.push("text.frequency");
-  if (!P["p6:main"]) missing.text.push("text.sequence");
+if (!P["p6:main"]) missing.text.push("text.sequence_overview + text.sequence_direction + text.sequence_contrast (combined p6:main)");
+
   if (!P["p7:main"]) missing.text.push("text.theme");
 
   if (!P["p8:C"]) missing.workWith.push("workWith.concealed");
