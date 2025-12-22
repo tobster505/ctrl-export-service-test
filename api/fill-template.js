@@ -353,108 +353,47 @@ function computeDomAndSecondKeys(P) {
   return { domKey, secondKey, templateKey: `${domKey}${secondKey}` };
 }
 
+/* ───────── radar chart embed (QuickChart) ───────── */
 function makeSpiderChartUrl12(bandsRaw) {
-  // Keys used to pull data (do NOT show these)
-  const keys = [
-    "C_low","C_mid","C_high",
-    "T_low","T_mid","T_high",
-    "R_low","R_mid","R_high",
-    "L_low","L_mid","L_high",
+  const labels = [
+    "C_low","C_mid","C_high","T_low","T_mid","T_high",
+    "R_low","R_mid","R_high","L_low","L_mid","L_high",
   ];
 
-  // Labels shown on the chart (only 4, rest blank)
-  const displayLabels = [
-    "", "Concealed", "",
-    "", "Triggered", "",
-    "", "Regulated", "",
-    "", "Lead", ""
-  ];
-
-  const vals = keys.map((k) => Number(bandsRaw?.[k] || 0));
-
-  // relative/shape scaling (as you had)
+  const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
   const maxVal = Math.max(...vals, 1);
-  const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
-
-// ✅ CTRL palette (Emerging → Developing → Established)
-const CTRL_COLOURS = {
-  C: { // Concealed — Warm Grey (Stone)
-    low:  "rgba(230, 228, 225, 0.55)", // #E6E4E1
-    mid:  "rgba(184, 180, 174, 0.55)", // #B8B4AE
-    high: "rgba(110, 106, 100, 0.55)", // #6E6A64
-  },
-  T: { // Triggered — Burnt Ochre
-    low:  "rgba(244, 225, 198, 0.55)", // #F4E1C6
-    mid:  "rgba(211, 155,  74, 0.55)", // #D39B4A
-    high: "rgba(154,  94,  26, 0.55)", // #9A5E1A
-  },
-  R: { // Regulated — Soft Sage
-    low:  "rgba(226, 236, 230, 0.55)", // #E2ECE6
-    mid:  "rgba(143, 183, 161, 0.55)", // #8FB7A1
-    high: "rgba( 79, 127, 105, 0.55)", // #4F7F69
-  },
-  L: { // Lead — Muted Aubergine
-    low:  "rgba(230, 220, 227, 0.55)", // #E6DCE3
-    mid:  "rgba(164, 135, 159, 0.55)", // #A4879F
-    high: "rgba( 94,  63,  90, 0.55)", // #5E3F5A
-  },
-};
-
-// ✅ assign a colour to each wedge based on key suffix (_low/_mid/_high)
-const colours = keys.map((k) => {
-  const state = k[0];                 // C / T / R / L
-  const tier = k.split("_")[1];       // low / mid / high
-  return CTRL_COLOURS[state]?.[tier] || "rgba(0,0,0,0.10)";
-});
-
-
-  // ✅ Rotate so C_mid (index 1) is centred at North
-  // Formula: -π/2 - (wedge/2) - (index * wedge)
-  // wedge = 2π/12 = π/6, index=1 → startAngle = -3π/4
-  const startAngle = -2.356194490192345; // -3*Math.PI/4
+  const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
   const cfg = {
-    type: "polarArea",
+    type: "radar",
     data: {
-      labels: displayLabels,
+      labels,
       datasets: [{
-        data,
-        backgroundColor: colours,
-        borderWidth: 3,
-        borderColor: "rgba(0, 0, 0, 0.20)",
+        label: "",
+        data: scaled,
+        fill: true,
+        borderWidth: 0,
+        pointRadius: 0,
+        backgroundColor: "rgba(184, 15, 112, 0.35)",
       }],
     },
     options: {
       plugins: { legend: { display: false } },
-      startAngle,
       scales: {
         r: {
-          startAngle,
-          min: 0,
-          max: 1,
+          min: 0, max: 1,
           ticks: { display: false },
-          grid: { display: true },
+          grid: { display: false },
           angleLines: { display: false },
-
-          pointLabels: {
-            display: true,
-            padding: 14,
-            font: { size: 24, weight: "bold" },
-
-            // ✅ This is what fixes “Concealed/Regulated” looking off-centre
-            centerPointLabels: true,
-          },
+          pointLabels: { display: false },
         },
       },
     },
   };
 
   const enc = encodeURIComponent(JSON.stringify(cfg));
-  return `https://quickchart.io/chart?c=${enc}&format=png&width=900&height=900&backgroundColor=transparent&version=4`;
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=800&height=800&backgroundColor=transparent`;
 }
-
-
-
 
 async function embedRemoteImage(pdfDoc, url) {
   if (!url) return null;
@@ -476,7 +415,7 @@ async function embedRadarFromBandsOrUrl(pdfDoc, page, box, bandsRaw, chartUrl) {
   if (!pdfDoc || !page || !box) return;
 
   // Prefer explicit chart URL if provided
-  let url = String(chartUrl || "").trim();
+  let url = S(chartUrl).trim();
   if (!url) {
     const hasAny =
       bandsRaw && typeof bandsRaw === "object" &&
@@ -541,11 +480,8 @@ const DEFAULT_LAYOUT = {
       collabL: { x: 320, y: 650, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
     },
 
-   // Page 9 (action anchor)
-   p9: {
-     hdrName: { x: 360, y: 44, w: 520, h: 34, size: 13, align: "left", maxLines: 1 },
-     actAnchor: { x: 55, y: 760, w: 950, h: 180, size: 20, align: "left", maxLines: 8 },
-   },
+    // Page 9 (action anchor)
+    p9: { actAnchor: { x: 25, y: 200, w: 550, h: 220, size: 20, align: "left", maxLines: 8 } },
   },
 };
 
@@ -673,21 +609,11 @@ function normaliseInput(d = {}) {
   const p4_main = S(text.domState || "");
   const p4_act  = S(text.state_tipact || "");
 
-// Page 5: Frequency (plus chart)
-const p5_tldr = formatTLDR(text.frequency_tldr || "");
-const p5_main = S(text.frequency || "");
-
-// ✅ accept chartdesc as the Page 5 Action source (plus your existing key)
-const p5_act  = S(
-  text.chartdesc ||
-  text.chartDesc ||
-  text.chart_desc ||
-  text.frequency_tipact ||
-  ""
-);
-
-const chartUrl = S(d.chartUrl || d.chart?.url || d["p5:chart"] || "");
-
+  // Page 5: Frequency (plus chart)
+  const p5_tldr = formatTLDR(text.frequency_tldr || "");
+  const p5_main = S(text.frequency || "");
+  const p5_act  = S(text.frequency_tipact || ""); // optional
+  const chartUrl = S(d.chartUrl || d.chart?.url || d["p5:chart"] || "");
 
   // Page 6: Sequence
   const p6_tldr = formatTLDR(text.sequence_tldr || "");
