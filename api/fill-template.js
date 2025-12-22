@@ -376,15 +376,37 @@ function makeSpiderChartUrl12(bandsRaw) {
   const maxVal = Math.max(...vals, 1);
   const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
-  // Shade by state boundary (optional but helpful)
-  const colours = keys.map((k) => {
-    const s = k[0];
-    if (s === "C") return "rgba(184, 15, 112, 0.18)";
-    if (s === "T") return "rgba(184, 15, 112, 0.32)";
-    if (s === "R") return "rgba(184, 15, 112, 0.24)";
-    if (s === "L") return "rgba(184, 15, 112, 0.28)";
-    return "rgba(184, 15, 112, 0.25)";
-  });
+// ✅ CTRL palette (Emerging → Developing → Established)
+const CTRL_COLOURS = {
+  C: { // Concealed — Warm Grey (Stone)
+    low:  "rgba(230, 228, 225, 0.55)", // #E6E4E1
+    mid:  "rgba(184, 180, 174, 0.55)", // #B8B4AE
+    high: "rgba(110, 106, 100, 0.55)", // #6E6A64
+  },
+  T: { // Triggered — Burnt Ochre
+    low:  "rgba(244, 225, 198, 0.55)", // #F4E1C6
+    mid:  "rgba(211, 155,  74, 0.55)", // #D39B4A
+    high: "rgba(154,  94,  26, 0.55)", // #9A5E1A
+  },
+  R: { // Regulated — Soft Sage
+    low:  "rgba(226, 236, 230, 0.55)", // #E2ECE6
+    mid:  "rgba(143, 183, 161, 0.55)", // #8FB7A1
+    high: "rgba( 79, 127, 105, 0.55)", // #4F7F69
+  },
+  L: { // Lead — Muted Aubergine
+    low:  "rgba(230, 220, 227, 0.55)", // #E6DCE3
+    mid:  "rgba(164, 135, 159, 0.55)", // #A4879F
+    high: "rgba( 94,  63,  90, 0.55)", // #5E3F5A
+  },
+};
+
+// ✅ assign a colour to each wedge based on key suffix (_low/_mid/_high)
+const colours = keys.map((k) => {
+  const state = k[0];                 // C / T / R / L
+  const tier = k.split("_")[1];       // low / mid / high
+  return CTRL_COLOURS[state]?.[tier] || "rgba(0,0,0,0.10)";
+});
+
 
   // ✅ Rotate so C_mid (index 1) is centred at North
   // Formula: -π/2 - (wedge/2) - (index * wedge)
@@ -398,8 +420,8 @@ function makeSpiderChartUrl12(bandsRaw) {
       datasets: [{
         data,
         backgroundColor: colours,
-        borderWidth: 1,
-        borderColor: "rgba(0, 0, 0, 0.08)",
+        borderWidth: 3,
+        borderColor: "rgba(0, 0, 0, 0.20)",
       }],
     },
     options: {
@@ -416,8 +438,8 @@ function makeSpiderChartUrl12(bandsRaw) {
 
           pointLabels: {
             display: true,
-            padding: 12,
-            font: { size: 18, weight: "bold" },
+            padding: 14,
+            font: { size: 24, weight: "bold" },
 
             // ✅ This is what fixes “Concealed/Regulated” looking off-centre
             centerPointLabels: true,
