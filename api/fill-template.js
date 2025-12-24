@@ -61,310 +61,856 @@ function parseDateLabelToYYYYMMDD(dateLbl) {
     if (mm) return `${yyyy}-${mm}-${dd}`;
   }
 
-  // Accept already YYYY-MM-DD
+  // Accept: "2025-12-19"
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) return s;
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  // Fallback: today-ish label → leave as-is
-  return s;
+  // Fallback: filename-safe label
+  return clampStrForFilename(s || "date");
 }
 
-function clean(v) {
-  const s = S(v, "").replace(/\s+/g, " ").trim();
-  return s.length ? s : "";
+function makeOutputFilename(fullName, dateLbl) {
+  const parts = S(fullName).trim().split(/\s+/).filter(Boolean);
+  const first = parts[0] || "First";
+  const last = parts.length > 1 ? parts[parts.length - 1] : "Surname";
+  const datePart = parseDateLabelToYYYYMMDD(dateLbl);
+
+  const fn = clampStrForFilename(first);
+  const ln = clampStrForFilename(last);
+
+  return `PoC_Profile_${fn}_${ln}_${datePart}.pdf`;
 }
 
-/* ───────────── text wrapping ───────────── */
-function wrapText(font, text, size, maxWidth) {
-  const words = S(text).replace(/\r/g, "").split(" ").filter(Boolean);
+/* ───────── TL→BL rect helper ───────── */
+const rectTLtoBL = (page, box) => {
+  const pageH = page.getHeight();
+  const x = N(box.x);
+  const w = Math.max(0, N(box.w));
+  const h = Math.max(0, N(box.h));
+  const y = pageH - N(box.y) - h;
+  return { x, y, w, h };
+};
+
+/* ───────── text wrapping + drawing ───────── */
+function wrapText(font, text, size, w) {
+  const raw = S(text);
+  const paragraphs = raw.split("\n");
   const lines = [];
-  let line = "";
 
-  for (const w of words) {
-    const test = line ? `${line} ${w}` : w;
-    const width = font.widthOfTextAtSize(test, size);
-    if (width <= maxWidth) {
-      line = test;
-    } else {
-      if (line) lines.push(line);
-      line = w;
+  for (const para of paragraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    let line = "";
+
+    if (!words.length) {
+      lines.push("");
+      continue;
     }
+
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+      const width = font.widthOfTextAtSize(test, size);
+      if (width <= w) {
+        line = test;
+      } else {
+        if (line) lines.push(line);
+        line = word;
+      }
+    }
+    if (line) lines.push(line);
   }
-  if (line) lines.push(line);
+
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
   return lines;
 }
 
-/* ───────────── draw helpers ───────────── */
 function drawTextBox(page, font, text, box, opts = {}) {
-  const t = clean(text);
-  if (!t) return;
+  if (!page || !font || !box) return;
+  const t0 = S(text);
+  if (!t0.trim()) return;
 
-  const size = N(box.size, 12);
-  const maxLines = N(opts.maxLines ?? box.maxLines, 50);
+  const { x, y, w, h } = rectTLtoBL(page, box);
+  const size = N(opts.size ?? box.size ?? 12);
+  const lineGap = N(opts.lineGap ?? box.lineGap ?? 2);
+  const maxLines = N(opts.maxLines ?? box.maxLines ?? 999);
+  const alignRaw = String(opts.align ?? box.align ?? "left").toLowerCase();
+  const align = (alignRaw === "centre") ? "center" : alignRaw;
 
-  const lineHeight = size * 1.2;
-  const top = N(box.y);
-  const left = N(box.x);
-  const width = N(box.w);
+  const pad = N(opts.pad ?? box.pad ?? 0);
 
-  const lines = wrapText(font, t, size, width);
-  const finalLines = lines.slice(0, maxLines);
+  if (opts.bg === true || box.bg === true) {
+    page.drawRectangle({
+      x,
+      y,
+      width: w,
+      height: h,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
+  }
 
-  let y = top - lineHeight;
-  for (const line of finalLines) {
-    const w = font.widthOfTextAtSize(line, size);
-    let x = left;
-    if (box.align === "center") x = left + (width - w) / 2;
-    if (box.align === "right") x = left + (width - w);
+  const innerW = Math.max(0, w - pad * 2);
+  const lines = wrapText(font, t0.replace(/\r/g, ""), size, innerW).slice(0, maxLines);
 
-    page.drawText(line, { x, y, size, font, color: rgb(0, 0, 0) });
-    y -= lineHeight;
+  const lineHeight = size + lineGap;
+  let cursorY = y + h - pad - size;
+
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (cursorY < y + pad) break;
+
+    let dx = x + pad;
+    if (align !== "left") {
+      const lw = font.widthOfTextAtSize(ln, size);
+      if (align === "center") dx = x + (w - lw) / 2;
+      if (align === "right") dx = x + w - pad - lw;
+    }
+
+    page.drawText(ln, { x: dx, y: cursorY, size, font, color: rgb(0, 0, 0) });
+    cursorY -= lineHeight;
   }
 }
 
-function drawDebugBox(page, font, label, obj, box) {
-  const txt = `${label}: ${JSON.stringify(safeJson(obj))}`;
-  drawTextBox(page, font, txt, box, { maxLines: box.maxLines ?? 25 });
+function drawLabelAndBody(page, fontB, font, label, body, box, bodyOpts = {}) {
+  const L = norm(label);
+  const B = S(body || "").replace(/\r/g, "").trim();
+  if (!L && !B) return;
+
+  const { x, y, w, h } = rectTLtoBL(page, box);
+  const size = N(box.size ?? 12);
+  const lineGap = N(box.lineGap ?? 2);
+  const pad = N(box.pad ?? 0);
+  const maxLines = N(box.maxLines ?? 50);
+
+  if (box.bg === true) {
+    page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1), borderWidth: 0 });
+  }
+
+  const lineHeight = size + lineGap;
+  let cursorY = y + h - pad - size;
+
+  if (L) {
+    page.drawText(L, { x: x + pad, y: cursorY, size, font: fontB, color: rgb(0, 0, 0) });
+    cursorY -= lineHeight;
+  }
+
+  if (B) {
+    const bodyBox = {
+      x: box.x,
+      y: box.y + (L ? lineHeight : 0),
+      w: box.w,
+      h: box.h - (L ? lineHeight : 0),
+      size: box.size,
+      align: (box.align ?? "left"),
+      maxLines: Math.max(1, maxLines - (L ? 1 : 0)),
+      lineGap: box.lineGap,
+      pad: box.pad,
+      bg: false,
+    };
+    drawTextBox(page, font, B, bodyBox, { ...bodyOpts, maxLines: bodyBox.maxLines });
+  }
 }
 
-/* ───────────── DEFAULT_LAYOUT (from V9) ───────────── */
-const DEFAULT_LAYOUT = {
-  // ... (UNCHANGED — all your existing layout remains exactly the same)
-  // NOTE: kept as-is per instruction: only p9 code changes.
-};
+/* ───────── TLDR formatting ───────── */
+function formatTLDR(tldr) {
+  const s = S(tldr).trim();
+  if (!s) return "";
 
-/* ───────────── read/merge layout overrides ───────────── */
-function mergeLayout(base, override) {
-  if (!override || typeof override !== "object") return base;
-  const out = structuredClone(base);
+  if (s.includes("\n")) {
+    return s
+      .split("\n")
+      .map((ln) => ln.trim())
+      .filter(Boolean)
+      .map((ln) => ln.startsWith("•") ? ln : `• ${ln.replace(/^-\s*/, "")}`)
+      .join("\n");
+  }
 
-  function deepMerge(dst, src) {
-    for (const k of Object.keys(src)) {
-      const v = src[k];
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        dst[k] = dst[k] && typeof dst[k] === "object" ? dst[k] : {};
-        deepMerge(dst[k], v);
-      } else {
-        dst[k] = v;
-      }
+  const parts = s.split("•").map((x) => x.trim()).filter(Boolean);
+  if (parts.length <= 1) {
+    const guess = s.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
+    return guess.map((x) => (x.startsWith("•") ? x : `• ${x}`)).join("\n");
+  }
+  return parts.map((x) => `• ${x}`).join("\n");
+}
+
+/* ───────── template loader ───────── */
+async function loadTemplateBytesLocal(fname) {
+  if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
+
+  const __file = fileURLToPath(import.meta.url);
+  const __dir = path.dirname(__file);
+
+  const candidates = [
+    path.join(process.cwd(), "public", fname),
+    path.join(__dir, "..", "public", fname),
+    path.join(__dir, "public", fname),
+    path.join(__dir, fname),
+  ];
+
+  let lastErr;
+  for (const pth of candidates) {
+    try {
+      return await fs.readFile(pth);
+    } catch (err) {
+      lastErr = err;
     }
   }
+  throw new Error(
+    `Template not found: ${fname}. Tried: ${candidates.join(" | ")}. Last: ${lastErr?.message || "no detail"}`
+  );
+}
 
-  deepMerge(out, override);
+/* ───────── payload parsing ───────── */
+async function readPayload(req) {
+  if (req.method === "POST") {
+    const chunks = [];
+    for await (const ch of req) chunks.push(ch);
+    const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+    try { return JSON.parse(raw); } catch { return {}; }
+  }
+
+  const url = new URL(req.url, "http://localhost");
+  const dataB64 = url.searchParams.get("data") || "";
+  if (!dataB64) return {};
+
+  try {
+    const raw = Buffer.from(dataB64, "base64").toString("utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+/* ───────── dom/second detection ───────── */
+function resolveStateKey(any) {
+  const s = S(any).trim().toUpperCase();
+  const c = s.charAt(0);
+  if (["C", "T", "R", "L"].includes(c)) return c;
+
+  const low = S(any).toLowerCase();
+  if (low.includes("concealed")) return "C";
+  if (low.includes("triggered")) return "T";
+  if (low.includes("regulated")) return "R";
+  if (low.includes("lead")) return "L";
+
+  return null;
+}
+
+function computeDomAndSecondKeys(P) {
+  const raw = P.raw || {};
+  const ctrl = raw.ctrl || {};
+  const summary = (ctrl.summary || raw.ctrl?.summary || {}) || {};
+
+  const domKey =
+    resolveStateKey(P.domKey) ||
+    resolveStateKey(P["p3:dom"]) ||
+    resolveStateKey(raw.domState) ||
+    resolveStateKey(raw.ctrl?.dominant) ||
+    resolveStateKey(summary.domState) ||
+    resolveStateKey(ctrl.domState) ||
+    "R";
+
+  const totals =
+    summary.ctrlTotals ||
+    summary.totals ||
+    summary.mix ||
+    ctrl.ctrlTotals ||
+    ctrl.totals ||
+    ctrl.mix ||
+    raw.ctrlTotals ||
+    raw.totals ||
+    raw.mix ||
+    {};
+
+  const score = { C: 0, T: 0, R: 0, L: 0 };
+  const addTotals = (obj) => {
+    if (!obj || typeof obj !== "object") return;
+    score.C += Number(obj.C ?? obj.concealed ?? obj.c ?? 0) || 0;
+    score.T += Number(obj.T ?? obj.triggered ?? obj.t ?? 0) || 0;
+    score.R += Number(obj.R ?? obj.regulated ?? obj.r ?? 0) || 0;
+    score.L += Number(obj.L ?? obj.lead ?? obj.l ?? 0) || 0;
+  };
+  addTotals(totals);
+
+  const ordered = ["C", "T", "R", "L"]
+    .filter((k) => k !== domKey)
+    .map((k) => [k, score[k]])
+    .sort((a, b) => b[1] - a[1]);
+
+  const secondKey = ordered[0]?.[0] || (domKey === "C" ? "T" : "C");
+  return { domKey, secondKey, templateKey: `${domKey}${secondKey}` };
+}
+
+/* ───────── radar chart embed (QuickChart) ───────── */
+function makeSpiderChartUrl12(bandsRaw) {
+  const keys = [
+    "C_low","C_mid","C_high",
+    "T_low","T_mid","T_high",
+    "R_low","R_mid","R_high",
+    "L_low","L_mid","L_high",
+  ];
+
+  const displayLabels = [
+    "", "Concealed", "",
+    "", "Triggered", "",
+    "", "Regulated", "",
+    "", "Lead", ""
+  ];
+
+  const vals = keys.map((k) => Number(bandsRaw?.[k] || 0));
+  const maxVal = Math.max(...vals, 1);
+  const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
+
+  const CTRL_COLOURS = {
+    C: {
+      low:  "rgba(230, 228, 225, 0.55)",
+      mid:  "rgba(184, 180, 174, 0.55)",
+      high: "rgba(110, 106, 100, 0.55)",
+    },
+    T: {
+      low:  "rgba(244, 225, 198, 0.55)",
+      mid:  "rgba(211, 155,  74, 0.55)",
+      high: "rgba(154,  94,  26, 0.55)",
+    },
+    R: {
+      low:  "rgba(226, 236, 230, 0.55)",
+      mid:  "rgba(143, 183, 161, 0.55)",
+      high: "rgba( 79, 127, 105, 0.55)",
+    },
+    L: {
+      low:  "rgba(230, 220, 227, 0.55)",
+      mid:  "rgba(164, 135, 159, 0.55)",
+      high: "rgba( 94,  63,  90, 0.55)",
+    },
+  };
+
+  const colours = keys.map((k) => {
+    const state = k[0];
+    const tier = k.split("_")[1];
+    return CTRL_COLOURS[state]?.[tier] || "rgba(0,0,0,0.10)";
+  });
+
+  // rotate so the labels sit at 45 degrees (your latest preferred look)
+  const startAngle = -Math.PI / 4;
+
+  const cfg = {
+    type: "polarArea",
+    data: {
+      labels: displayLabels,
+      datasets: [{
+        data,
+        backgroundColor: colours,
+        borderWidth: 3,
+        borderColor: "rgba(0, 0, 0, 0.20)",
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      startAngle,
+      scales: {
+        r: {
+          startAngle,
+          min: 0,
+          max: 1,
+          ticks: { display: false },
+          grid: { display: true },
+          angleLines: { display: false },
+          pointLabels: {
+            display: true,
+            padding: 14,
+            font: { size: 26, weight: "bold" }, // bigger labels (you asked)
+            centerPointLabels: true,
+          },
+        },
+      },
+    },
+  };
+
+  const enc = encodeURIComponent(JSON.stringify(cfg));
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=900&height=900&backgroundColor=transparent&version=4`;
+}
+
+async function embedRemoteImage(pdfDoc, url) {
+  if (!url) return null;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch chart: ${res.status} ${res.statusText}`);
+
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const sig = String.fromCharCode(buf[0], buf[1], buf[2], buf[3] || 0);
+
+  if (sig.startsWith("\x89PNG")) return await pdfDoc.embedPng(buf);
+  if (sig.startsWith("\xff\xd8")) return await pdfDoc.embedJpg(buf);
+
+  try { return await pdfDoc.embedPng(buf); }
+  catch { return await pdfDoc.embedJpg(buf); }
+}
+
+async function embedRadarFromBandsOrUrl(pdfDoc, page, box, bandsRaw, chartUrl) {
+  if (!pdfDoc || !page || !box) return;
+
+  let url = S(chartUrl).trim();
+  if (!url) {
+    const hasAny =
+      bandsRaw && typeof bandsRaw === "object" &&
+      Object.values(bandsRaw).some((v) => Number(v) > 0);
+    if (!hasAny) return;
+    url = makeSpiderChartUrl12(bandsRaw);
+  }
+
+  const img = await embedRemoteImage(pdfDoc, url);
+  if (!img) return;
+
+  const H = page.getHeight();
+  page.drawImage(img, { x: box.x, y: H - box.y - box.h, width: box.w, height: box.h });
+}
+
+/* ───────── DEFAULT LAYOUT (V9: your coordinates) ───────── */
+const DEFAULT_LAYOUT = {
+  pages: {
+    p1: {
+      name: { x: 60, y: 458, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
+      date: { x: 230, y: 613, w: 500, h: 40, size: 25, align: "left", maxLines: 1 },
+    },
+
+    // Header name on pages 2–10
+    p2:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p3:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p4:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p5:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p6:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p7:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p8:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p9:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p10: { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+
+    // Page 3
+    p3TLDR: { domDesc: { x: 25, y: 310, w: 550, h: 210, size: 15, align: "left", maxLines: 10 } },
+    p3main: { domDesc: { x: 25, y: 515, w: 550, h: 520, size: 15, align: "left", maxLines: 26 } },
+    p3act:  { domDesc: { x: 25, y: 700, w: 550, h: 140, size: 15, align: "left", maxLines: 8 } },
+
+    // Page 4
+    p4TLDR: { spider: { x: 25, y: 160, w: 550, h: 220, size: 14, align: "left", maxLines: 10 } },
+    p4main: { spider: { x: 25, y: 330, w: 550, h: 520, size: 14, align: "left", maxLines: 26 } },
+    p4act:  { spider: { x: 25, y: 650, w: 550, h: 140, size: 14, align: "left", maxLines: 8 } },
+
+    // Page 5 (text + chart)
+    p5TLDR: { seqpat: { x: 25, y: 170, w: 170, h: 220, size: 15, align: "left", maxLines: 10 } },
+    p5main: { seqpat: { x: 25, y: 530, w: 550, h: 520, size: 15, align: "left", maxLines: 28 } },
+    p5act:  { seqpat: { x: 25, y: 680, w: 550, h: 140, size: 15, align: "left", maxLines: 8 } },
+    p5chart:{ chart:  { x: 250, y: 160, w: 320, h: 320 } },
+
+    // Page 6
+    p6TLDR: { themeExpl: { x: 25, y: 160, w: 550, h: 220, size: 16, align: "left", maxLines: 10 } },
+    p6main: { themeExpl: { x: 25, y: 300, w: 550, h: 520, size: 16, align: "left", maxLines: 26 } },
+    p6act:  { themeExpl: { x: 25, y: 560, w: 550, h: 140, size: 16, align: "left", maxLines: 8 } },
+
+    // Page 7
+    p7TLDR: { themesTop: { x: 30, y: 280, w: 550, h: 220, size: 16, align: "left", maxLines: 10 } },
+    p7main: { themesTop: { x: 30, y: 430, w: 550, h: 520, size: 16, align: "left", maxLines: 26 } },
+    p7act:  { themesTop: { x: 30, y: 660, w: 550, h: 140, size: 16, align: "left", maxLines: 8 } },
+
+    // ✅ new: themesLow (right column)
+    p7: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      themesLow: { x: 320, y: 210, w: 290, h: 900, size: 15, align: "left", maxLines: 28 },
+    },
+
+    // Page 8: 2x2 grid
+    p8grid: {
+      collabC: { x: 30,  y: 300, w: 270, h: 420, size: 14, align: "left", maxLines: 14 },
+      collabT: { x: 320, y: 300, w: 260, h: 420, size: 14, align: "left", maxLines: 14 },
+      collabR: { x: 30,  y: 575, w: 260, h: 420, size: 14, align: "left", maxLines: 14 },
+      collabL: { x: 320, y: 575, w: 260, h: 420, size: 14, align: "left", maxLines: 14 },
+    },
+
+    // Page 9: Action anchor
+    p9: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      actAnchor: { x: 25, y: 300, w: 550, h: 220, size: 16, align: "left", maxLines: 8 },
+    },
+  },
+};
+
+function deepMerge(target, source) {
+  const out = JSON.parse(JSON.stringify(target || {}));
+  if (!source || typeof source !== "object") return out;
+
+  for (const k of Object.keys(source)) {
+    const sv = source[k];
+    const tv = out[k];
+    if (sv && typeof sv === "object" && !Array.isArray(sv)) {
+      out[k] = deepMerge(tv && typeof tv === "object" ? tv : {}, sv);
+    } else {
+      out[k] = sv;
+    }
+  }
   return out;
 }
 
-/* ───────────── input decoding ───────────── */
-function decodeBase64Json(b64) {
-  const raw = Buffer.from(S(b64), "base64").toString("utf8");
-  return JSON.parse(raw);
-}
+/* ───────── URL-driven layout overrides ───────── */
+function applyLayoutOverridesFromUrl(layout, url) {
+  if (!layout || !layout.pages || !url || !url.searchParams) return { layout, applied: [], ignored: [] };
 
-/* ───────────── handler ───────────── */
-export default async function handler(req, res) {
-  try {
-    const q = req.query || {};
-    const dataB64 = q.data || "";
+  const allowed = new Set(["x","y","w","h","size","maxLines","align","pad","lineGap","bg"]);
+  const pages = layout.pages;
 
-    if (!dataB64) {
-      res.status(400).json({ ok: false, error: "Missing ?data=<base64 JSON>" });
-      return;
+  const applied = [];
+  const ignored = [];
+
+  for (const [k, v] of url.searchParams.entries()) {
+    if (!k.startsWith("L_")) continue;
+
+    const bits = k.split("_");
+    if (bits.length < 4) { ignored.push({ k, v, why: "bits<4" }); continue; }
+
+    const pageKey = bits[1];
+    const boxKey  = bits[2];
+    const prop    = bits.slice(3).join("_");
+
+    if (!pages[pageKey] || !pages[pageKey][boxKey]) { ignored.push({ k, v, why: "unknown box" }); continue; }
+    if (!allowed.has(prop)) { ignored.push({ k, v, why: "prop not allowed" }); continue; }
+
+    if (prop === "align") {
+      const a0 = String(v || "").toLowerCase();
+      const a = (a0 === "centre") ? "center" : a0;
+      if (["left","center","right"].includes(a)) {
+        pages[pageKey][boxKey][prop] = a;
+        applied.push({ k, v });
+      } else {
+        ignored.push({ k, v, why: "bad align" });
+      }
+      continue;
     }
 
-    const d = decodeBase64Json(dataB64);
+    if (prop === "bg") {
+      pages[pageKey][boxKey][prop] = (String(v) === "1" || String(v).toLowerCase() === "true");
+      applied.push({ k, v });
+      continue;
+    }
 
-    const layout = mergeLayout(DEFAULT_LAYOUT, d?.layout);
+    const num = Number(v);
+    if (!Number.isFinite(num)) { ignored.push({ k, v, why: "not a number" }); continue; }
 
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
+    pages[pageKey][boxKey][prop] = num;
+    applied.push({ k, v });
+  }
 
-    const templateRel = d?.pdfTpl || "template.pdf";
-    const tplPath = path.join(__dirname, "..", "templates", templateRel);
+  return { layout, applied, ignored };
+}
 
-    const tplBytes = await fs.readFile(tplPath);
-    const pdfDoc = await PDFDocument.load(tplBytes);
+/* ───────── input normaliser ───────── */
+function normaliseInput(d = {}) {
+  const identity = d.identity || {};
+  const text = d.text || {};
+  const workWith = d.workWith || {};
+  const ctrl = d.ctrl || {};
+  const summary = ctrl.summary || {};
+
+  const name =
+    (d.person && d.person.fullName) ||
+    identity.fullName ||
+    identity.name ||
+    d["p1:n"] ||
+    d.fullName ||
+    identity.preferredName ||
+    "";
+
+  const email = identity.email || d.email || "";
+  const dateLbl = d.dateLbl || d.date || d["p1:d"] || (d.meta && d.meta.dateLbl) || "";
+
+  const ctrlBands = (ctrl.bands && typeof ctrl.bands === "object") ? ctrl.bands : null;
+  const sumBands  = (summary.bands && typeof summary.bands === "object") ? summary.bands : null;
+  const ctrl12    = (summary.ctrl12 && typeof summary.ctrl12 === "object") ? summary.ctrl12 : null;
+  const rootBands = (d.bands && typeof d.bands === "object") ? d.bands : null;
+
+  const bandsRaw =
+    (ctrlBands && Object.keys(ctrlBands).length ? ctrlBands : null) ||
+    (sumBands  && Object.keys(sumBands).length  ? sumBands  : null) ||
+    (ctrl12    && Object.keys(ctrl12).length    ? ctrl12    : null) ||
+    (rootBands && Object.keys(rootBands).length ? rootBands : null) ||
+    {};
+
+  const domState =
+    d.domState ||
+    ctrl.dominant ||
+    summary.domState ||
+    ctrl.domState ||
+    d["p3:dom"] ||
+    "";
+
+  // p3
+  const p3_tldr = formatTLDR(text.execSummary_tldr || "");
+  const p3_main = S(text.execSummary || "");
+  const p3_act  = S(text.execSummary_tipact || text.tipAction || "");
+
+  // p4
+  const p4_tldr = formatTLDR(text.state_tldr || text.domState_tldr || "");
+  const p4_dom  = S(text.domState || "");
+  const p4_bot  = S(text.bottomState || "");
+  const p4_main = [p4_dom, p4_bot].map((s) => S(s).trim()).filter(Boolean).join("\n\n");
+  const p4_act  = S(text.state_tipact || "");
+
+  // p5
+  const p5_tldr = formatTLDR(text.frequency_tldr || "");
+  const p5_main = S(text.frequency || "");
+  const p5_act  = S(text.frequency_tipact || "");
+  const chartUrl = S(d.chartUrl || d.chart?.url || d["p5:chart"] || "");
+
+  // p6
+  const p6_tldr = formatTLDR(text.sequence_tldr || "");
+  const p6_main = S(text.sequence || "");
+  const p6_act  = S(text.sequence_tipact || "");
+
+  // p7
+  const p7_tldr = formatTLDR(text.theme_tldr || text.themesTop_tldr || "");
+  const p7_main = S(text.theme || text.themesTop || "");
+  const p7_act  = S(text.theme_tipact || text.themesTop_tip || "");
+  const p7_low  = S(text.themesLow || text.themeLow || text.themes_low || ""); // ✅ wired for your new p7_themesLow coords
+
+  // p8
+  const p8C = S(workWith.concealed || "");
+  const p8T = S(workWith.triggered || "");
+  const p8R = S(workWith.regulated || "");
+  const p8L = S(workWith.lead || "");
+
+  // p9
+  const p9_anchor = S(text.act_anchor || text.action_anchor || "");
+
+  return {
+    raw: d,
+    identity: { fullName: name, email, dateLabel: dateLbl },
+
+    bands: bandsRaw,
+    layout: d.layout || null,
+
+    "p1:n": name,
+    "p1:d": dateLbl,
+    "p3:dom": domState,
+
+    "p3:tldr": p3_tldr,
+    "p3:main": p3_main,
+    "p3:act":  p3_act,
+
+    "p4:tldr": p4_tldr,
+    "p4:main": p4_main,
+    "p4:act":  p4_act,
+
+    "p5:tldr": p5_tldr,
+    "p5:main": p5_main,
+    "p5:act":  p5_act,
+    "p5:chartUrl": chartUrl,
+
+    "p6:tldr": p6_tldr,
+    "p6:main": p6_main,
+    "p6:act":  p6_act,
+
+    "p7:tldr": p7_tldr,
+    "p7:main": p7_main,
+    "p7:act":  p7_act,
+    "p7:low":  p7_low,
+
+    "p8:C": p8C,
+    "p8:T": p8T,
+    "p8:R": p8R,
+    "p8:L": p8L,
+
+    "p9:anchor": p9_anchor,
+  };
+}
+
+/* ───────── probe summary (unchanged) ───────── */
+function buildMasterProbe(P, domSecond) {
+  const fullName = S(P.identity?.fullName || "");
+  const email = S(P.identity?.email || "");
+  const dateLabel = S(P.identity?.dateLabel || P["p1:d"] || "");
+
+  const bands = P.bands || {};
+  const bandKeys = Object.keys(bands);
+  const required12 = [
+    "C_low","C_mid","C_high","T_low","T_mid","T_high",
+    "R_low","R_mid","R_high","L_low","L_mid","L_high",
+  ];
+  const present12 = required12.filter((k) => bandKeys.includes(k)).length;
+
+  const textKeys = 0
+    + (P["p3:tldr"] ? 1 : 0) + (P["p3:main"] ? 1 : 0) + (P["p3:act"] ? 1 : 0)
+    + (P["p4:tldr"] ? 1 : 0) + (P["p4:main"] ? 1 : 0) + (P["p4:act"] ? 1 : 0)
+    + (P["p5:tldr"] ? 1 : 0) + (P["p5:main"] ? 1 : 0) + (P["p5:act"] ? 1 : 0)
+    + (P["p6:tldr"] ? 1 : 0) + (P["p6:main"] ? 1 : 0) + (P["p6:act"] ? 1 : 0)
+    + (P["p7:tldr"] ? 1 : 0) + (P["p7:main"] ? 1 : 0) + (P["p7:act"] ? 1 : 0)
+    + (P["p7:low"] ? 1 : 0)
+    + (P["p9:anchor"] ? 1 : 0);
+
+  const workWithKeys = 0
+    + (P["p8:C"] ? 1 : 0)
+    + (P["p8:T"] ? 1 : 0)
+    + (P["p8:R"] ? 1 : 0)
+    + (P["p8:L"] ? 1 : 0);
+
+  const missing = { identity: [], ctrl: [], text: [], workWith: [] };
+
+  if (!fullName.trim()) missing.identity.push("identity.fullName");
+  if (!email.trim()) missing.identity.push("identity.email");
+  if (!dateLabel.trim()) missing.identity.push("identity.dateLabel");
+
+  if (!domSecond?.domKey) missing.ctrl.push("ctrl.summary.dominantKey");
+  if (!domSecond?.secondKey) missing.ctrl.push("ctrl.summary.secondKey");
+  if (!domSecond?.templateKey) missing.ctrl.push("ctrl.summary.templateKey");
+
+  if (!P["p3:tldr"]) missing.text.push("text.execSummary_tldr");
+  if (!P["p3:main"]) missing.text.push("text.execSummary");
+  if (!P["p3:act"])  missing.text.push("text.execSummary_tipact");
+
+  if (!P["p5:main"]) missing.text.push("text.frequency");
+  if (!P["p6:main"]) missing.text.push("text.sequence");
+  if (!P["p7:main"]) missing.text.push("text.theme");
+
+  if (!P["p8:C"]) missing.workWith.push("workWith.concealed");
+  if (!P["p8:T"]) missing.workWith.push("workWith.triggered");
+  if (!P["p8:R"]) missing.workWith.push("workWith.regulated");
+  if (!P["p8:L"]) missing.workWith.push("workWith.lead");
+
+  return {
+    ok: true,
+    where: "fill-template:v9:master_probe:summary",
+    domSecond: safeJson(domSecond),
+    identity: {
+      fullName: { has: !!fullName, len: fullName.length, preview: fullName.slice(0, 40) },
+      email: { has: !!email, len: email.length, preview: email.slice(0, 40) },
+      dateLabel: { has: !!dateLabel, len: dateLabel.length, preview: dateLabel.slice(0, 40) },
+    },
+    counts: {
+      questions: 0,
+      bandsKeys: bandKeys.length,
+      bandsPresent12: present12,
+      textKeys,
+      workWithKeys,
+      freqTldrExtraKeys: [],
+    },
+    missing,
+  };
+}
+
+/* ───────── main handler ───────── */
+export default async function handler(req, res) {
+  try {
+    const url = new URL(req.url, "http://localhost");
+    const debug = url.searchParams.get("debug") === "1";
+
+    const payload = await readPayload(req);
+    const P = normaliseInput(payload);
+    const domSecond = computeDomAndSecondKeys(P);
+
+    let layout = deepMerge(DEFAULT_LAYOUT, P.layout || {});
+    const { layout: layout2, applied, ignored } = applyLayoutOverridesFromUrl(layout, url);
+    layout = layout2;
+    const L = layout.pages || DEFAULT_LAYOUT.pages;
+
+    if (debug) {
+      const probe = buildMasterProbe(P, domSecond);
+      probe.layoutOverrides = { applied, ignored };
+      return res.status(200).json(probe);
+    }
+
+    const validCombos = new Set(["CT","CL","CR","TC","TR","TL","RC","RT","RL","LC","LR","LT"]);
+    const safeCombo = validCombos.has(domSecond.templateKey) ? domSecond.templateKey : "CT";
+    const tpl = `CTRL_PoC_Assessment_Profile_template_${safeCombo}.pdf`;
+
+    const pdfBytes = await loadTemplateBytesLocal(tpl);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    /* ───────────── map input payload into text keys ───────────── */
-    const text = d?.text || {};
+    const pages = pdfDoc.getPages();
 
-    const fullName = clean(text.fullName);
-    const dateLabel = clean(text.dateLabel);
-    const dateForFile = parseDateLabelToYYYYMMDD(dateLabel);
+    // p1
+    if (pages[0] && L.p1) {
+      if (L.p1.name && P["p1:n"]) drawTextBox(pages[0], fontB, P["p1:n"], L.p1.name, { maxLines: 1 });
+      if (L.p1.date && P["p1:d"]) drawTextBox(pages[0], font,  P["p1:d"], L.p1.date, { maxLines: 1 });
+    }
 
-    const p3_exec_tldr = clean(text.execSummary_tldr);
-    const p3_exec = clean(text.execSummary);
-    const p3_exec_tipact = clean(text.execSummary_tipact);
-
-    const p4_state_tldr = clean(text.state_tldr);
-    const p4_dom = clean(text.domState);
-    const p4_top3_state = clean(text.top3SubStates);
-    const p4_bottom3_state = clean(text.bottom3SubStates);
-    const p4_state_tipact = clean(text.state_tipact);
-
-    const p5_freq_tldr = clean(text.freq_tldr);
-    const p5_freq = clean(text.freq_summary);
-    const p5_freq_tipact = clean(text.freq_tipact);
-
-    const p6_seq_tldr = clean(text.seq_tldr);
-    const p6_seq_overview = clean(text.seq_overview);
-    const p6_seq_direction = clean(text.seq_direction);
-    const p6_seq_contrast = clean(text.seq_contrast);
-    const p6_seq_tipact = clean(text.seq_tipact);
-
-    const p7_theme_tldr = clean(text.theme_tldr);
-    const p7_theme = clean(text.theme_summary);
-    const p7_theme_tipact = clean(text.theme_tipact);
-
-    const p7_themesLow = clean(text.themesLow); // v9 addition
-    const p9_anchor = clean(text.act_anchor);
-
-    const payload = {
-      meta: {
-        fullName,
-        dateLabel,
-        fileSafeName: clampStrForFilename(fullName || "CTRL_Profile"),
-        fileSafeDate: clampStrForFilename(dateForFile || dateLabel || "DATE"),
-      },
-      layout,
-      text: {
-        "p1:name": fullName,
-        "p1:date": dateLabel,
-
-        "p3:exec_tldr": p3_exec_tldr,
-        "p3:exec": p3_exec,
-        "p3:exec_tipact": p3_exec_tipact,
-
-        "p4:state_tldr": p4_state_tldr,
-        "p4:dom": p4_dom,
-        "p4:top3_state": p4_top3_state,
-        "p4:bottom3_state": p4_bottom3_state,
-        "p4:state_tipact": p4_state_tipact,
-
-        "p5:freq_tldr": p5_freq_tldr,
-        "p5:freq": p5_freq,
-        "p5:freq_tipact": p5_freq_tipact,
-
-        "p6:seq_tldr": p6_seq_tldr,
-        "p6:seq_overview": p6_seq_overview,
-        "p6:seq_direction": p6_seq_direction,
-        "p6:seq_contrast": p6_seq_contrast,
-        "p6:seq_tipact": p6_seq_tipact,
-
-        "p7:theme_tldr": p7_theme_tldr,
-        "p7:theme": p7_theme,
-        "p7:theme_tipact": p7_theme_tipact,
-        "p7:themesLow": p7_themesLow,
-
-        "p9:anchor": p9_anchor,
-
-        // ✅ V11 addition (p9 actions): accept multiple possible incoming keys for max robustness
-        "p9:act1": clean(text.act_1 || text.act1 || text.action1 || text.p9_act_1 || text.p9_act1 || text["p9:act1"] || text["p9:action1"]),
-        "p9:act2": clean(text.act_2 || text.act2 || text.action2 || text.p9_act_2 || text.p9_act2 || text["p9:act2"] || text["p9:action2"]),
-        "p9:act3": clean(text.act_3 || text.act3 || text.action3 || text.p9_act_3 || text.p9_act3 || text["p9:act3"] || text["p9:action3"]),
-        "p9:act4": clean(text.act_4 || text.act4 || text.action4 || text.p9_act_4 || text.p9_act4 || text["p9:act4"] || text["p9:action4"]),
-      },
-      debug: d?.debug || null,
-      chart: d?.chart || null,
-    };
-
-    /* ───────────── render ───────────── */
-    const L = payload.layout;
-    const P = payload.text;
-
-    // Page 1
-    const p1 = pdfDoc.getPage(0);
-    if (L.p1?.name && P["p1:name"]) drawTextBox(p1, font, P["p1:name"], L.p1.name, { maxLines: L.p1.name.maxLines });
-    if (L.p1?.date && P["p1:date"]) drawTextBox(p1, font, P["p1:date"], L.p1.date, { maxLines: L.p1.date.maxLines });
-
-    // Page 3 (index 2)
-    const p3 = pdfDoc.getPage(2);
-    if (L.p3?.execTldr && P["p3:exec_tldr"]) drawTextBox(p3, font, P["p3:exec_tldr"], L.p3.execTldr, { maxLines: L.p3.execTldr.maxLines });
-    if (L.p3?.exec && P["p3:exec"]) drawTextBox(p3, font, P["p3:exec"], L.p3.exec, { maxLines: L.p3.exec.maxLines });
-    if (L.p3?.execTipAct && P["p3:exec_tipact"]) drawTextBox(p3, font, P["p3:exec_tipact"], L.p3.execTipAct, { maxLines: L.p3.execTipAct.maxLines });
-
-    // Page 4 (index 3)
-    const p4 = pdfDoc.getPage(3);
-    if (L.p4?.stateTldr && P["p4:state_tldr"]) drawTextBox(p4, font, P["p4:state_tldr"], L.p4.stateTldr, { maxLines: L.p4.stateTldr.maxLines });
-    if (L.p4?.dom && P["p4:dom"]) drawTextBox(p4, font, P["p4:dom"], L.p4.dom, { maxLines: L.p4.dom.maxLines });
-    if (L.p4?.top3 && P["p4:top3_state"]) drawTextBox(p4, font, P["p4:top3_state"], L.p4.top3, { maxLines: L.p4.top3.maxLines });
-    if (L.p4?.bottom3 && P["p4:bottom3_state"]) drawTextBox(p4, font, P["p4:bottom3_state"], L.p4.bottom3, { maxLines: L.p4.bottom3.maxLines });
-    if (L.p4?.tipAct && P["p4:state_tipact"]) drawTextBox(p4, font, P["p4:state_tipact"], L.p4.tipAct, { maxLines: L.p4.tipAct.maxLines });
-
-    // Page 5 (index 4)
-    const p5 = pdfDoc.getPage(4);
-    if (L.p5?.freqTldr && P["p5:freq_tldr"]) drawTextBox(p5, font, P["p5:freq_tldr"], L.p5.freqTldr, { maxLines: L.p5.freqTldr.maxLines });
-    if (L.p5?.freq && P["p5:freq"]) drawTextBox(p5, font, P["p5:freq"], L.p5.freq, { maxLines: L.p5.freq.maxLines });
-    if (L.p5?.tipAct && P["p5:freq_tipact"]) drawTextBox(p5, font, P["p5:freq_tipact"], L.p5.tipAct, { maxLines: L.p5.tipAct.maxLines });
-
-    // Page 6 (index 5)
-    const p6 = pdfDoc.getPage(5);
-    if (L.p6?.seqTldr && P["p6:seq_tldr"]) drawTextBox(p6, font, P["p6:seq_tldr"], L.p6.seqTldr, { maxLines: L.p6.seqTldr.maxLines });
-    if (L.p6?.seqOverview && P["p6:seq_overview"]) drawTextBox(p6, font, P["p6:seq_overview"], L.p6.seqOverview, { maxLines: L.p6.seqOverview.maxLines });
-    if (L.p6?.seqDirection && P["p6:seq_direction"]) drawTextBox(p6, font, P["p6:seq_direction"], L.p6.seqDirection, { maxLines: L.p6.seqDirection.maxLines });
-    if (L.p6?.seqContrast && P["p6:seq_contrast"]) drawTextBox(p6, font, P["p6:seq_contrast"], L.p6.seqContrast, { maxLines: L.p6.seqContrast.maxLines });
-    if (L.p6?.tipAct && P["p6:seq_tipact"]) drawTextBox(p6, font, P["p6:seq_tipact"], L.p6.tipAct, { maxLines: L.p6.tipAct.maxLines });
-
-    // Page 7 (index 6)
-    const p7 = pdfDoc.getPage(6);
-    if (L.p7?.themeTldr && P["p7:theme_tldr"]) drawTextBox(p7, font, P["p7:theme_tldr"], L.p7.themeTldr, { maxLines: L.p7.themeTldr.maxLines });
-    if (L.p7?.theme && P["p7:theme"]) drawTextBox(p7, font, P["p7:theme"], L.p7.theme, { maxLines: L.p7.theme.maxLines });
-    if (L.p7?.tipAct && P["p7:theme_tipact"]) drawTextBox(p7, font, P["p7:theme_tipact"], L.p7.tipAct, { maxLines: L.p7.tipAct.maxLines });
-    if (L.p7?.themesLow && P["p7:themesLow"]) drawTextBox(p7, font, P["p7:themesLow"], L.p7.themesLow, { maxLines: L.p7.themesLow.maxLines });
-
-    // Page 9 (index 8)
-    const p9 = pdfDoc.getPage(8);
-
-    // ✅ V11 UPDATED p9 rendering:
-    // - If p9:act1..4 exist → render them as 4 separate bullet blocks inside the existing actAnchor area
-    // - Else fall back to legacy p9:anchor
-    // (No other rendering is changed.)
-    if (p9 && L.p9?.actAnchor) {
-      const a1 = clean(P["p9:act1"]);
-      const a2 = clean(P["p9:act2"]);
-      const a3 = clean(P["p9:act3"]);
-      const a4 = clean(P["p9:act4"]);
-      const acts = [a1, a2, a3, a4].filter(Boolean);
-
-      if (acts.length) {
-        const base = L.p9.actAnchor;
-        const eachH = base.h / 4;
-        const perBoxMax = Math.max(1, Math.floor((base.maxLines || 12) / 4));
-
-        acts.slice(0, 4).forEach((t, i) => {
-          drawTextBox(
-            p9,
-            font,
-            `• ${t}`,
-            { ...base, y: base.y - i * eachH, h: eachH },
-            { maxLines: perBoxMax }
-          );
-        });
-      } else if (P["p9:anchor"]) {
-        drawTextBox(p9, font, P["p9:anchor"], L.p9.actAnchor, { maxLines: L.p9.actAnchor.maxLines });
+    // headers p2–p10
+    const headerName = norm(P["p1:n"]);
+    if (headerName) {
+      for (let i = 1; i < pages.length; i++) {
+        const pk = `p${i + 1}`;
+        const box = L?.[pk]?.hdrName;
+        if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1 });
       }
     }
 
-    // Debug block (if enabled)
-    if (payload.debug?.enabled && payload.debug?.box) {
-      const pageIdx = N(payload.debug.pageIndex, 0);
-      const dbgPage = pdfDoc.getPage(pageIdx);
-      drawDebugBox(dbgPage, font, "DEBUG", payload.debug, payload.debug.box);
+    const p3 = pages[2] || null;
+    const p4 = pages[3] || null;
+    const p5 = pages[4] || null;
+    const p6 = pages[5] || null;
+    const p7 = pages[6] || null;
+    const p8 = pages[7] || null;
+    const p9 = pages[8] || null;
+
+    if (p3) {
+      if (L.p3TLDR?.domDesc) drawLabelAndBody(p3, fontB, font, "TLDR",  P["p3:tldr"], L.p3TLDR.domDesc);
+      if (L.p3main?.domDesc) drawLabelAndBody(p3, fontB, font, "",      P["p3:main"], L.p3main.domDesc);
+      if (L.p3act?.domDesc)  drawLabelAndBody(p3, fontB, font, "Action", P["p3:act"],  L.p3act.domDesc);
+    }
+
+    if (p4) {
+      if (L.p4TLDR?.spider) drawLabelAndBody(p4, fontB, font, "TLDR",  P["p4:tldr"], L.p4TLDR.spider);
+      if (L.p4main?.spider) drawLabelAndBody(p4, fontB, font, "",      P["p4:main"], L.p4main.spider);
+      if (L.p4act?.spider)  drawLabelAndBody(p4, fontB, font, "Action", P["p4:act"],  L.p4act.spider);
+    }
+
+    if (p5) {
+      if (L.p5TLDR?.seqpat) drawLabelAndBody(p5, fontB, font, "TLDR",  P["p5:tldr"], L.p5TLDR.seqpat);
+      if (L.p5main?.seqpat) drawLabelAndBody(p5, fontB, font, "",      P["p5:main"], L.p5main.seqpat);
+      if (L.p5act?.seqpat)  drawLabelAndBody(p5, fontB, font, "Action", P["p5:act"],  L.p5act.seqpat);
+
+      if (L.p5chart?.chart) {
+        try {
+          await embedRadarFromBandsOrUrl(pdfDoc, p5, L.p5chart.chart, P.bands || {}, P["p5:chartUrl"]);
+        } catch (e) {
+          console.warn("[fill-template:v9] Radar chart skipped:", e?.message || String(e));
+        }
+      }
+    }
+
+    if (p6) {
+      if (L.p6TLDR?.themeExpl) drawLabelAndBody(p6, fontB, font, "TLDR",  P["p6:tldr"], L.p6TLDR.themeExpl);
+      if (L.p6main?.themeExpl) drawLabelAndBody(p6, fontB, font, "",      P["p6:main"], L.p6main.themeExpl);
+      if (L.p6act?.themeExpl)  drawLabelAndBody(p6, fontB, font, "Action", P["p6:act"],  L.p6act.themeExpl);
+    }
+
+    if (p7) {
+      if (L.p7TLDR?.themesTop) drawLabelAndBody(p7, fontB, font, "TLDR",  P["p7:tldr"], L.p7TLDR.themesTop);
+      if (L.p7main?.themesTop) drawLabelAndBody(p7, fontB, font, "",      P["p7:main"], L.p7main.themesTop);
+      if (L.p7act?.themesTop)  drawLabelAndBody(p7, fontB, font, "Action", P["p7:act"],  L.p7act.themesTop);
+
+      // ✅ themesLow right column (if provided)
+      if (L.p7?.themesLow && P["p7:low"]) {
+        drawTextBox(p7, font, P["p7:low"], L.p7.themesLow, { maxLines: L.p7.themesLow.maxLines });
+      }
+    }
+
+    if (p8 && L.p8grid) {
+      if (L.p8grid.collabC && P["p8:C"]) drawTextBox(p8, font, P["p8:C"], L.p8grid.collabC, { maxLines: L.p8grid.collabC.maxLines });
+      if (L.p8grid.collabT && P["p8:T"]) drawTextBox(p8, font, P["p8:T"], L.p8grid.collabT, { maxLines: L.p8grid.collabT.maxLines });
+      if (L.p8grid.collabR && P["p8:R"]) drawTextBox(p8, font, P["p8:R"], L.p8grid.collabR, { maxLines: L.p8grid.collabR.maxLines });
+      if (L.p8grid.collabL && P["p8:L"]) drawTextBox(p8, font, P["p8:L"], L.p8grid.collabL, { maxLines: L.p8grid.collabL.maxLines });
+    }
+
+    if (p9 && L.p9?.actAnchor && P["p9:anchor"]) {
+      drawTextBox(p9, font, P["p9:anchor"], L.p9.actAnchor, { maxLines: L.p9.actAnchor.maxLines });
     }
 
     const outBytes = await pdfDoc.save();
 
-    const fileSafeName = payload.meta.fileSafeName || "CTRL_Profile";
-    const fileSafeDate = payload.meta.fileSafeDate || "DATE";
-    const filename = `${fileSafeName}_${fileSafeDate}.pdf`;
-
+    const outName = makeOutputFilename(P["p1:n"], P["p1:d"]);
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
     res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
     res.status(200).send(Buffer.from(outBytes));
   } catch (err) {
-    console.error("[fill-template] CRASH", err);
+    console.error("[fill-template:v9] CRASH", err);
     res.status(500).json({
       ok: false,
       error: err?.message || String(err),
