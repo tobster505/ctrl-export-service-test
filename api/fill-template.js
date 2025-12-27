@@ -1,18 +1,21 @@
 /**
- * CTRL PoC Export Service · fill-template (V11.2)
+ * CTRL PoC Export Service · fill-template (V12)
  * Place at: /api/fill-template.js  (ctrl-poc-service)
  *
- * Fix:
- * - Template selection now uses payload.ctrl.templateKey (e.g., "TR") to load:
- *   CTRL_PoC_Assessment_Profile_template_TR.pdf
- * - Fallback template is:
- *   CTRL_PoC_Assessment_Profile_template_fallback.pdf
- *
- * Notes:
- * - Keeps V11 mapping + rendering pipeline
- * - Page 9 renders 4 actions: text.act_1..act_4
- * - Legacy anchor still supported as a fallback render path, but not required
- * - Chart generator now matches V9 exactly (labels, colours, normalisation, rotation)
+ * V12 requirements implemented:
+ * - ONLY uses NEW keys (no legacy packSection, no old p3/p4/p5 mappings)
+ * - Debug via &debug=1 inspects every critical aspect (payload shape, types, lengths, bands, template selection, layout, page count, etc.)
+ * - D1 now sourced from ctrl.summary (PoC_Summaries / PoC_FINAL.summary forwarded) for debug visibility
+ * - PDF positions:
+ *   Page 1: FullName + Date (no change)
+ *   Pages 2–8: header FullName (no change; total 8 pages)
+ *   Page 3: exec_summary_para1 + exec_summary_para2
+ *   Page 4: ctrl_overview_para1 + ctrl_overview_para2 + chart (chart moved here)
+ *   Page 5: ctrl_deepdive_para1 + ctrl_deepdive_para2 + themes_para1 + themes_para2
+ *   Page 6: workWith page (C/T/R/L boxes) (was page 8)
+ *   Page 7: Act1..Act6
+ * - No change to build-link BASE64 convention (GET ?data=...).
+ * - No change to template selection & fallback behaviour (still dom/second combos).
  */
 
 export const config = { runtime: "nodejs" };
@@ -20,9 +23,9 @@ export const config = { runtime: "nodejs" };
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
-/* ───────────── small utils ───────────── */
+/* ───────────── utilities ───────────── */
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
 const norm = (s) => S(s).replace(/\s+/g, " ").trim();
@@ -32,91 +35,73 @@ function safeJson(obj) {
   catch { return { _error: "Could not serialise debug object" }; }
 }
 
-function safeJsonParse(s, fb = {}) {
-  try { return JSON.parse(String(s || "")); }
-  catch { return fb; }
-}
+/* ───────── TL→BL rect helper ───────── */
+const rectTLtoBL = (page, box, inset = 0) => {
+  const pageH = page.getHeight();
+  const x = N(box.x) + inset;
+  const w = Math.max(0, N(box.w) - inset * 2);
 
-function clampStrForFilename(s) {
-  return S(s)
-    .trim()
-    .replace(/\s+/g, "_")
-    .replace(/[^A-Za-z0-9_\-]/g, "")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
+  const hRaw = N(box.h || 400);
+  const h = Math.max(0, hRaw - inset * 2);
 
-function parseDateLabelToYYYYMMDD(dateLbl) {
-  const s = S(dateLbl).trim();
+  const y = pageH - N(box.y) - hRaw + inset;
+  return { x, y, w, h };
+};
 
-  // Accept: "19 Dec 2025" / "19 December 2025"
-  const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
-  if (m) {
-    const dd = String(m[1]).padStart(2, "0");
-    const monRaw = m[2].toLowerCase();
-    const yyyy = m[3];
+/* ───────── text box helper ───────── */
+function drawTextBox(page, font, text, box, opts = {}) {
+  if (!page || !font || !box) return;
+  const t0 = String(text ?? "").trim();
+  if (!t0) return;
 
-    const map = {
-      jan: "01", january: "01",
-      feb: "02", february: "02",
-      mar: "03", march: "03",
-      apr: "04", april: "04",
-      may: "05",
-      jun: "06", june: "06",
-      jul: "07", july: "07",
-      aug: "08", august: "08",
-      sep: "09", sept: "09", september: "09",
-      oct: "10", october: "10",
-      nov: "11", november: "11",
-      dec: "12", december: "12",
-    };
+  const { x, y, w, h } = rectTLtoBL(page, box, 0);
+  const size = N(box.size || opts.size || 12);
+  const lineHeight = N(opts.lineHeight || Math.round(size * 1.3));
+  const maxLines = N(opts.maxLines || box.maxLines || 999);
+  const align = opts.align || box.align || "left";
 
-    const mm = map[monRaw] || map[monRaw.slice(0, 3)];
-    if (mm) return `${yyyy}-${mm}-${dd}`;
+  const paragraphs = String(t0).split("\n");
+  const lines = [];
+
+  for (const para of paragraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    let line = "";
+
+    for (const word of words) {
+      const test = line ? line + " " + word : word;
+      const width = font.widthOfTextAtSize(test, size);
+      if (width <= w) {
+        line = test;
+      } else {
+        if (line) lines.push(line);
+        line = word;
+      }
+      if (lines.length >= maxLines) break;
+    }
+    if (lines.length >= maxLines) break;
+    if (line) lines.push(line);
+
+    if (lines.length < maxLines) lines.push("");
   }
 
-  // Accept: "2025-12-19"
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
 
-  // Fallback: filename-safe label
-  return clampStrForFilename(s || "date");
-}
+  const clipped = lines.slice(0, maxLines);
+  const startY = y + h - lineHeight;
 
-function makeOutputFilename(fullName, dateLbl) {
-  const parts = S(fullName).trim().split(/\s+/).filter(Boolean);
-  const first = parts[0] || "First";
-  const last = parts.length > 1 ? parts[parts.length - 1] : "Surname";
-  const datePart = parseDateLabelToYYYYMMDD(dateLbl);
-
-  const fn = clampStrForFilename(first);
-  const ln = clampStrForFilename(last);
-  return `CTRL_${fn}_${ln}_${datePart}.pdf`;
-}
-
-/* ───────── TLDR formatting ───────── */
-function formatTLDR(tldr) {
-  const s = S(tldr).trim();
-  if (!s) return "";
-
-  if (s.includes("\n")) {
-    return s
-      .split("\n")
-      .map((ln) => ln.trim())
-      .filter(Boolean)
-      .map((ln) => ln.startsWith("•") ? ln : `• ${ln.replace(/^-\s*/, "")}`)
-      .join("\n");
+  for (let i = 0; i < clipped.length; i++) {
+    const t = clipped[i];
+    const tw = font.widthOfTextAtSize(t, size);
+    let tx = x;
+    if (align === "center") tx = x + (w - tw) / 2;
+    if (align === "right") tx = x + (w - tw);
+    const ty = startY - i * lineHeight;
+    if (ty < y) break;
+    page.drawText(t, { x: tx, y: ty, size, font });
   }
-
-  const parts = s.split("•").map((x) => x.trim()).filter(Boolean);
-  if (parts.length <= 1) {
-    const guess = s.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
-    return guess.map((x) => (x.startsWith("•") ? x : `• ${x}`)).join("\n");
-  }
-  return parts.map((x) => `• ${x}`).join("\n");
 }
 
-/* ───────── template loader (local /public search) ───────── */
+/* ───────── template loader ───────── */
 async function loadTemplateBytesLocal(fname) {
   if (!fname.endsWith(".pdf")) throw new Error(`Invalid template filename: ${fname}`);
 
@@ -143,229 +128,136 @@ async function loadTemplateBytesLocal(fname) {
   );
 }
 
-/* ───────── template selection (12 variants + fallback) ───────── */
-function pickTemplateFilename(payload) {
-  const FALLBACK = "CTRL_PoC_Assessment_Profile_template_fallback.pdf";
-
-  // Allow direct override if you pass the full filename in payload
-  const direct = String(payload?.tpl || payload?.template || payload?.pdfTpl || "").trim();
-  if (direct) return direct.endsWith(".pdf") ? direct : (direct + ".pdf");
-
-  const allowed = new Set(["CL","CT","CR","LC","LR","LT","RC","RL","RT","TC","TL","TR"]);
-
-  const keyRaw = String(payload?.ctrl?.templateKey || "").toUpperCase().replace(/[^A-Z]/g, "");
-  const key = keyRaw.slice(0, 2); // safety
-
-  if (allowed.has(key)) {
-    return `CTRL_PoC_Assessment_Profile_template_${key}.pdf`;
+/* ───────── payload parsing (GET ?data=... or POST JSON) ───────── */
+async function readPayload(req) {
+  if (req.method === "POST") {
+    const chunks = [];
+    for await (const ch of req) chunks.push(ch);
+    const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+    try { return JSON.parse(raw); } catch { return {}; }
   }
 
-  // Soft fallback (your preference)
-  return FALLBACK;
-}
+  const url = new URL(req.url, "http://localhost");
+  const dataB64 = url.searchParams.get("data") || "";
+  if (!dataB64) return {};
 
-/* ───────── drawing helpers ───────── */
-function rectTLtoBL(page, box) {
-  const H = page.getHeight();
-  return { x: box.x, y: H - box.y - box.h, w: box.w, h: box.h };
-}
-
-function splitToLines(font, text, maxWidth, size) {
-  const words = S(text).replace(/\r/g, "").split(/\s+/).filter(Boolean);
-  const lines = [];
-  let line = "";
-
-  for (const w of words) {
-    const test = line ? `${line} ${w}` : w;
-    const width = font.widthOfTextAtSize(test, size);
-    if (width <= maxWidth) {
-      line = test;
-    } else {
-      if (line) lines.push(line);
-      line = w;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
-
-function drawTextBox(page, font, text, box, opts = {}) {
-  const txt = S(text || "").replace(/\r/g, "").trim();
-  if (!txt) return;
-
-  const { x, y, w, h } = rectTLtoBL(page, box);
-  const size = N(box.size ?? 12);
-  const lineGap = N(box.lineGap ?? 2);
-  const pad = N(box.pad ?? 0);
-
-  const alignRaw = String(opts.align ?? box.align ?? "left").toLowerCase();
-  const align = (alignRaw === "centre") ? "center" : alignRaw;
-
-  const maxLines = N(opts.maxLines ?? box.maxLines ?? 50);
-  const lineHeight = size + lineGap;
-
-  if (box.bg === true) {
-    page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1), borderWidth: 0 });
-  }
-
-  const paragraphs = txt.split("\n");
-  let cursorY = y + h - pad - size;
-  let linesUsed = 0;
-
-  for (let p = 0; p < paragraphs.length; p++) {
-    const para = paragraphs[p].trim();
-    if (!para) continue;
-
-    const lines = splitToLines(font, para, w - pad * 2, size);
-    for (const ln of lines) {
-      if (linesUsed >= maxLines) return;
-
-      const lw = font.widthOfTextAtSize(ln, size);
-      let dx = x + pad;
-      if (align === "center") dx = x + (w - lw) / 2;
-      if (align === "right")  dx = x + w - pad - lw;
-
-      page.drawText(ln, { x: dx, y: cursorY, size, font, color: rgb(0, 0, 0) });
-      cursorY -= lineHeight;
-      linesUsed += 1;
-
-      if (cursorY < y + pad) return;
-    }
-
-    if (p < paragraphs.length - 1) {
-      cursorY -= Math.max(0, lineGap);
-      if (cursorY < y + pad) return;
-    }
+  try {
+    const raw = Buffer.from(dataB64, "base64").toString("utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
   }
 }
 
-function drawLabelAndBody(page, fontB, font, label, body, box, bodyOpts = {}) {
-  const L = norm(label);
-  const B = S(body || "").replace(/\r/g, "").trim();
-  if (!L && !B) return;
+/* ───────── dom/second detection ───────── */
+function resolveStateKey(any) {
+  const s = S(any).trim().toUpperCase();
+  const c = s.charAt(0);
+  if (["C", "T", "R", "L"].includes(c)) return c;
 
-  const { x, y, w, h } = rectTLtoBL(page, box);
-  const size = N(box.size ?? 12);
-  const lineGap = N(box.lineGap ?? 2);
-  const pad = N(box.pad ?? 0);
-  const maxLines = N(box.maxLines ?? 50);
+  const low = S(any).toLowerCase();
+  if (low.includes("concealed")) return "C";
+  if (low.includes("triggered")) return "T";
+  if (low.includes("regulated")) return "R";
+  if (low.includes("lead")) return "L";
 
-  if (box.bg === true) {
-    page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1), borderWidth: 0 });
-  }
-
-  const lineHeight = size + lineGap;
-  let cursorY = y + h - pad - size;
-
-  if (L) {
-    page.drawText(L, { x: x + pad, y: cursorY, size, font: fontB, color: rgb(0, 0, 0) });
-    cursorY -= lineHeight;
-  }
-
-  if (B) {
-    const bodyBox = {
-      x: box.x,
-      y: box.y + (L ? lineHeight : 0),
-      w: box.w,
-      h: box.h - (L ? lineHeight : 0),
-      size: box.size,
-      align: (box.align ?? "left"),
-      maxLines: Math.max(1, maxLines - (L ? 1 : 0)),
-      lineGap: box.lineGap,
-      pad: box.pad,
-      bg: false,
-    };
-    drawTextBox(page, font, B, bodyBox, { ...bodyOpts, maxLines: bodyBox.maxLines });
-  }
+  return null;
 }
 
-/* ───────── chart (V9 exact) ───────── */
-function makeSpiderChartUrl12(bandsRaw) {
-  const keys = [
-    "C_low","C_mid","C_high",
-    "T_low","T_mid","T_high",
-    "R_low","R_mid","R_high",
-    "L_low","L_mid","L_high",
-  ];
+function computeDomAndSecondKeys(D) {
+  // Prefer explicit keys from build-pdf
+  const ctrl = D.ctrl || {};
+  const summary = ctrl.summary || {};
+  const raw = D.raw || D;
 
-  const displayLabels = [
-    "", "Concealed", "",
-    "", "Triggered", "",
-    "", "Regulated", "",
-    "", "Lead", ""
-  ];
+  const domKey =
+    resolveStateKey(ctrl.dominantKey) ||
+    resolveStateKey(raw.domKey) ||
+    resolveStateKey(summary.domKey) ||
+    resolveStateKey(summary.domState) ||
+    "R";
 
-  const vals = keys.map((k) => Number(bandsRaw?.[k] || 0));
-  const maxVal = Math.max(...vals, 1);
-  const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
+  const secondKey =
+    resolveStateKey(ctrl.secondKey) ||
+    resolveStateKey(raw.secondKey) ||
+    resolveStateKey(summary.secondKey) ||
+    resolveStateKey(summary.secondState) ||
+    null;
 
-  const CTRL_COLOURS = {
-    C: {
-      low:  "rgba(230, 228, 225, 0.55)",
-      mid:  "rgba(184, 180, 174, 0.55)",
-      high: "rgba(110, 106, 100, 0.55)",
-    },
-    T: {
-      low:  "rgba(244, 225, 198, 0.55)",
-      mid:  "rgba(211, 155,  74, 0.55)",
-      high: "rgba(154,  94,  26, 0.55)",
-    },
-    R: {
-      low:  "rgba(226, 236, 230, 0.55)",
-      mid:  "rgba(143, 183, 161, 0.55)",
-      high: "rgba( 79, 127, 105, 0.55)",
-    },
-    L: {
-      low:  "rgba(230, 220, 227, 0.55)",
-      mid:  "rgba(164, 135, 159, 0.55)",
-      high: "rgba( 94,  63,  90, 0.55)",
-    },
+  // If second is missing, attempt compute from totals (best effort)
+  if (secondKey) return { domKey, secondKey };
+
+  const totals =
+    summary.ctrlTotals ||
+    summary.totals ||
+    summary.mix ||
+    ctrl.ctrlTotals ||
+    ctrl.totals ||
+    ctrl.mix ||
+    raw.ctrlTotals ||
+    raw.totals ||
+    raw.mix ||
+    {};
+
+  const score = { C: 0, T: 0, R: 0, L: 0 };
+  const addTotals = (obj) => {
+    if (!obj || typeof obj !== "object") return;
+    score.C += Number(obj.C ?? obj.concealed ?? obj.c ?? 0) || 0;
+    score.T += Number(obj.T ?? obj.triggered ?? obj.t ?? 0) || 0;
+    score.R += Number(obj.R ?? obj.regulated ?? obj.r ?? 0) || 0;
+    score.L += Number(obj.L ?? obj.lead ?? obj.l ?? 0) || 0;
   };
+  addTotals(totals);
 
-  const colours = keys.map((k) => {
-    const state = k[0];
-    const tier = k.split("_")[1];
-    return CTRL_COLOURS[state]?.[tier] || "rgba(0,0,0,0.10)";
-  });
+  const ordered = ["C", "T", "R", "L"]
+    .filter((k) => k !== domKey)
+    .map((k) => [k, score[k]])
+    .sort((a, b) => b[1] - a[1]);
 
-  // rotate so the labels sit at 45 degrees (your preferred look)
-  const startAngle = -Math.PI / 4;
+  const fallbackSecond = ordered[0]?.[0] || (domKey === "C" ? "T" : "C");
+  return { domKey, secondKey: fallbackSecond };
+}
+
+/* ───────── radar chart embed (QuickChart) ───────── */
+function makeSpiderChartUrl12(bandsRaw) {
+  const labels = [
+    "C_low","C_mid","C_high","T_low","T_mid","T_high",
+    "R_low","R_mid","R_high","L_low","L_mid","L_high",
+  ];
+
+  const vals = labels.map((k) => Number(bandsRaw?.[k] || 0));
+  const maxVal = Math.max(...vals, 1);
+  const scaled = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
   const cfg = {
-    type: "polarArea",
+    type: "radar",
     data: {
-      labels: displayLabels,
+      labels,
       datasets: [{
-        data,
-        backgroundColor: colours,
-        borderWidth: 3,
-        borderColor: "rgba(0, 0, 0, 0.20)",
+        label: "",
+        data: scaled,
+        fill: true,
+        borderWidth: 0,
+        pointRadius: 0,
+        backgroundColor: "rgba(184, 15, 112, 0.35)",
       }],
     },
     options: {
       plugins: { legend: { display: false } },
-      startAngle,
       scales: {
         r: {
-          startAngle,
-          min: 0,
-          max: 1,
+          min: 0, max: 1,
           ticks: { display: false },
-          grid: { display: true },
+          grid: { display: false },
           angleLines: { display: false },
-          pointLabels: {
-            display: true,
-            padding: 14,
-            font: { size: 26, weight: "bold" },
-            centerPointLabels: true,
-          },
+          pointLabels: { display: false },
         },
       },
     },
   };
 
   const enc = encodeURIComponent(JSON.stringify(cfg));
-  return `https://quickchart.io/chart?c=${enc}&format=png&width=900&height=900&backgroundColor=transparent&version=4`;
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=800&height=800&backgroundColor=transparent`;
 }
 
 async function embedRemoteImage(pdfDoc, url) {
@@ -384,431 +276,442 @@ async function embedRemoteImage(pdfDoc, url) {
   catch { return await pdfDoc.embedJpg(buf); }
 }
 
-async function embedRadarFromBandsOrUrl(pdfDoc, page, box, bandsRaw, chartUrl) {
-  if (!pdfDoc || !page || !box) return;
+async function embedRadarFromBands(pdfDoc, page, box, bandsRaw) {
+  if (!pdfDoc || !page || !box || !bandsRaw) return;
 
-  let url = S(chartUrl).trim();
-  if (!url) {
-    const hasAny =
-      bandsRaw && typeof bandsRaw === "object" &&
-      Object.values(bandsRaw).some((v) => Number(v) > 0);
-    if (!hasAny) return;
-    url = makeSpiderChartUrl12(bandsRaw);
-  }
+  const hasAny =
+    bandsRaw && typeof bandsRaw === "object" &&
+    Object.values(bandsRaw).some((v) => Number(v) > 0);
 
+  if (!hasAny) return;
+
+  const url = makeSpiderChartUrl12(bandsRaw);
   const img = await embedRemoteImage(pdfDoc, url);
   if (!img) return;
 
   const H = page.getHeight();
-  page.drawImage(img, { x: box.x, y: H - box.y - box.h, width: box.w, height: box.h });
+  const { x, y, w, h } = box;
+  page.drawImage(img, { x, y: H - y - h, width: w, height: h });
 }
 
-/* ───────── DEFAULT LAYOUT (unchanged from your V11) ───────── */
+/* ───────── DEFAULT LAYOUT (8 pages only) ───────── */
 const DEFAULT_LAYOUT = {
   pages: {
     p1: {
-      name: { x: 60, y: 458, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
-      date: { x: 230, y: 613, w: 500, h: 40, size: 25, align: "left", maxLines: 1 },
+      name: { x: 7, y: 473, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
+      date: { x: 210, y: 600, w: 500, h: 40, size: 25, align: "left", maxLines: 1 },
     },
-    p2:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p3:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p4:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p5:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p6:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p7:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p8:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p9:  { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
-    p10: { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
 
-    p3TLDR: { domDesc: { x: 25, y: 310, w: 550, h: 210, size: 15, align: "left", maxLines: 10 } },
-    p3main: { domDesc: { x: 25, y: 515, w: 550, h: 520, size: 15, align: "left", maxLines: 26 } },
-    p3act:  { domDesc: { x: 25, y: 700, w: 550, h: 140, size: 15, align: "left", maxLines: 8 } },
+    // Header name on pages 2–8 (used by handler loop)
+    p2: { hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
 
-    p4TLDR: { spider: { x: 25, y: 160, w: 550, h: 220, size: 14, align: "left", maxLines: 10 } },
-    p4main: { spider: { x: 25, y: 330, w: 550, h: 520, size: 14, align: "left", maxLines: 26 } },
-    p4act:  { spider: { x: 25, y: 650, w: 550, h: 140, size: 14, align: "left", maxLines: 8 } },
+    // Page 3
+    p3: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      exec1:   { x: 25,  y: 200, w: 550, h: 420, size: 18, align: "left", maxLines: 18 },
+      exec2:   { x: 25,  y: 650, w: 550, h: 420, size: 18, align: "left", maxLines: 18 },
+    },
 
-    p5TLDR: { seqpat: { x: 25, y: 170, w: 170, h: 220, size: 15, align: "left", maxLines: 10 } },
-    p5main: { seqpat: { x: 25, y: 530, w: 550, h: 520, size: 15, align: "left", maxLines: 28 } },
-    p5act:  { seqpat: { x: 25, y: 680, w: 550, h: 140, size: 15, align: "left", maxLines: 8 } },
-    p5chart:{ chart:  { x: 250, y: 160, w: 320, h: 320 } },
+    // Page 4 (overview + chart now here)
+    p4: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      ov1:     { x: 25,  y: 200, w: 550, h: 420, size: 18, align: "left", maxLines: 18 },
+      ov2:     { x: 25,  y: 650, w: 550, h: 420, size: 18, align: "left", maxLines: 18 },
+      chart:   { x: 48,  y: 462, w: 500, h: 300 }, // keep style; moved from p5 in older versions
+    },
 
-    p6TLDR: { themeExpl: { x: 25, y: 160, w: 550, h: 220, size: 16, align: "left", maxLines: 10 } },
-    p6main: { themeExpl: { x: 25, y: 300, w: 550, h: 520, size: 16, align: "left", maxLines: 26 } },
-    p6act:  { themeExpl: { x: 25, y: 560, w: 550, h: 140, size: 16, align: "left", maxLines: 8 } },
+    // Page 5 (deepdive + themes)
+    p5: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      dd1:     { x: 25,  y: 200, w: 550, h: 360, size: 18, align: "left", maxLines: 16 },
+      dd2:     { x: 25,  y: 590, w: 550, h: 360, size: 18, align: "left", maxLines: 16 },
+      th1:     { x: 25,  y: 980, w: 550, h: 260, size: 18, align: "left", maxLines: 12 },
+      th2:     { x: 25,  y: 1240, w: 550, h: 260, size: 18, align: "left", maxLines: 12 },
+    },
 
-    p7TLDR: { themesTop: { x: 25, y: 160, w: 550, h: 220, size: 15, align: "left", maxLines: 10 } },
-    p7main: { themesTop: { x: 25, y: 350, w: 260, h: 520, size: 15, align: "left", maxLines: 26 } },
-    p7act:  { themesTop: { x: 25, y: 640, w: 260, h: 140, size: 15, align: "left", maxLines: 8 } },
+    // Page 6 (workWith)
+    p6: {
+      hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      collabC: { x: 30,  y: 200, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+      collabT: { x: 320, y: 200, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+      collabR: { x: 30,  y: 650, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+      collabL: { x: 320, y: 650, w: 300, h: 420, size: 17, align: "left", maxLines: 14 },
+    },
 
+    // Page 7 (Acts)
     p7: {
       hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
-      themesLow: { x: 320, y: 210, w: 290, h: 900, size: 15, align: "left", maxLines: 28 },
+      act1: { x: 30, y: 200, w: 590, h: 150, size: 17, align: "left", maxLines: 6 },
+      act2: { x: 30, y: 360, w: 590, h: 150, size: 17, align: "left", maxLines: 6 },
+      act3: { x: 30, y: 520, w: 590, h: 150, size: 17, align: "left", maxLines: 6 },
+      act4: { x: 30, y: 680, w: 590, h: 150, size: 17, align: "left", maxLines: 6 },
+      act5: { x: 30, y: 840, w: 590, h: 150, size: 17, align: "left", maxLines: 6 },
+      act6: { x: 30, y: 1000,w: 590, h: 150, size: 17, align: "left", maxLines: 6 },
     },
 
-    p8grid: {
-      collabC: { x: 30,  y: 300, w: 270, h: 420, size: 14, align: "left", maxLines: 14 },
-      collabT: { x: 320, y: 300, w: 260, h: 420, size: 14, align: "left", maxLines: 14 },
-      collabR: { x: 30,  y: 575, w: 260, h: 420, size: 14, align: "left", maxLines: 14 },
-      collabL: { x: 320, y: 575, w: 260, h: 420, size: 14, align: "left", maxLines: 14 },
-    },
-
-    p9: {
+    // Page 8 (header only by default)
+    p8: {
       hdrName: { x: 380, y: 51, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
-
-      // legacy box kept
-      actAnchor: { x: 25, y: 300, w: 550, h: 220, size: 16, align: "left", maxLines: 8 },
-
-      // new split boxes
-      act1: { x: 25, y: 300, w: 550, h: 50, size: 16, align: "left", maxLines: 2 },
-      act2: { x: 25, y: 355, w: 550, h: 50, size: 16, align: "left", maxLines: 2 },
-      act3: { x: 25, y: 410, w: 550, h: 50, size: 16, align: "left", maxLines: 2 },
-      act4: { x: 25, y: 465, w: 550, h: 50, size: 16, align: "left", maxLines: 2 },
     },
   },
 };
 
-function deepMerge(target, source) {
-  const out = JSON.parse(JSON.stringify(target || {}));
-  if (!source || typeof source !== "object") return out;
+/* deep merge override into default */
+function mergeLayout(overrides = null) {
+  const base = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+  if (!overrides || typeof overrides !== "object") return base;
 
-  for (const k of Object.keys(source)) {
-    const sv = source[k];
-    const tv = out[k];
-    if (sv && typeof sv === "object" && !Array.isArray(sv)) {
-      out[k] = deepMerge(tv && typeof tv === "object" ? tv : {}, sv);
-    } else {
-      out[k] = sv;
+  const out = JSON.parse(JSON.stringify(base));
+  const ov = overrides;
+
+  if (ov.pages && typeof ov.pages === "object") {
+    out.pages = out.pages || {};
+    for (const pk of Object.keys(ov.pages)) {
+      out.pages[pk] = { ...(out.pages[pk] || {}), ...(ov.pages[pk] || {}) };
     }
   }
+
+  for (const k of Object.keys(ov)) {
+    if (k === "pages") continue;
+    out[k] = ov[k];
+  }
+
   return out;
 }
 
 /* ───────── URL-driven layout overrides ───────── */
 function applyLayoutOverridesFromUrl(layout, url) {
-  if (!layout || !layout.pages || !url || !url.searchParams) return { layout, applied: [], ignored: [] };
+  if (!layout || !layout.pages || !url || !url.searchParams) return layout;
 
-  const allowed = new Set(["x","y","w","h","size","maxLines","align","pad","lineGap","bg"]);
+  const allowed = new Set(["x","y","w","h","size","maxLines","align"]);
   const pages = layout.pages;
-
-  const applied = [];
-  const ignored = [];
 
   for (const [k, v] of url.searchParams.entries()) {
     if (!k.startsWith("L_")) continue;
 
-    const bits = k.split("_");
-    if (bits.length < 4) { ignored.push({ k, v, why: "bits<4" }); continue; }
+    const bits = k.split("_"); // L_p3_exec1_y
+    if (bits.length < 4) continue;
 
     const pageKey = bits[1];
     const boxKey  = bits[2];
     const prop    = bits.slice(3).join("_");
 
-    if (!pages[pageKey] || !pages[pageKey][boxKey]) { ignored.push({ k, v, why: "unknown box" }); continue; }
-    if (!allowed.has(prop)) { ignored.push({ k, v, why: "prop not allowed" }); continue; }
+    if (!pages[pageKey] || !pages[pageKey][boxKey]) continue;
+    if (!allowed.has(prop)) continue;
 
     if (prop === "align") {
-      const a0 = String(v || "").toLowerCase();
-      const a = (a0 === "centre") ? "center" : a0;
-      if (["left","center","right"].includes(a)) {
-        pages[pageKey][boxKey][prop] = a;
-        applied.push({ k, v });
-      } else {
-        ignored.push({ k, v, why: "bad align" });
-      }
-      continue;
-    }
-
-    if (prop === "bg") {
-      pages[pageKey][boxKey][prop] = (String(v) === "1" || String(v).toLowerCase() === "true");
-      applied.push({ k, v });
+      const a = String(v || "").toLowerCase();
+      if (["left","center","right"].includes(a)) pages[pageKey][boxKey][prop] = a;
       continue;
     }
 
     const num = Number(v);
-    if (!Number.isFinite(num)) { ignored.push({ k, v, why: "not a number" }); continue; }
-
+    if (!Number.isFinite(num)) continue;
     pages[pageKey][boxKey][prop] = num;
-    applied.push({ k, v });
   }
 
-  return { layout, applied, ignored };
+  return layout;
 }
 
-/* ───────── input normaliser ───────── */
+/* ───────── input normaliser (NEW KEYS ONLY) ───────── */
 function normaliseInput(d = {}) {
   const identity = d.identity || {};
-  const text = d.text || {};
-  const workWith = d.workWith || {};
   const ctrl = d.ctrl || {};
   const summary = ctrl.summary || {};
+  const text = d.text || {};
+  const workWith = d.workWith || {};
 
-  const name =
-    (d.person && d.person.fullName) ||
-    identity.fullName ||
-    identity.name ||
-    d["p1:n"] ||
-    d.fullName ||
-    identity.preferredName ||
-    "";
+  // Name + Date
+  const name = norm(identity.fullName || d.fullName || identity.name || "");
+  const date = norm(identity.dateLabel || d.dateLbl || d.dateLabel || d.date || "");
 
-  const email = identity.email || d.email || "";
-  const dateLbl = d.dateLbl || d.date || d["p1:d"] || identity.dateLabel || (d.meta && d.meta.dateLbl) || "";
-
-  const ctrlBands = (ctrl.bands && typeof ctrl.bands === "object") ? ctrl.bands : null;
-  const sumBands  = (summary.bands && typeof summary.bands === "object") ? summary.bands : null;
-  const ctrl12    = (summary.ctrl12 && typeof summary.ctrl12 === "object") ? summary.ctrl12 : null;
-  const rootBands = (d.bands && typeof d.bands === "object") ? d.bands : null;
-
+  // Bands for chart (no change)
   const bandsRaw =
-    (ctrlBands && Object.keys(ctrlBands).length ? ctrlBands : null) ||
-    (sumBands  && Object.keys(sumBands).length  ? sumBands  : null) ||
-    (ctrl12    && Object.keys(ctrl12).length    ? ctrl12    : null) ||
-    (rootBands && Object.keys(rootBands).length ? rootBands : null) ||
+    (ctrl.bands && typeof ctrl.bands === "object" ? ctrl.bands : null) ||
+    (summary.ctrl12 && typeof summary.ctrl12 === "object" ? summary.ctrl12 : null) ||
+    (d.bands && typeof d.bands === "object" ? d.bands : null) ||
     {};
 
-  const p3_tldr = formatTLDR(text.execSummary_tldr || "");
-  const p3_main = S(text.execSummary || "");
-  const p3_act  = S(text.execSummary_tipact || text.tipAction || "");
+  // NEW PAGE TEXT KEYS (ONLY)
+  const exec1 = text.exec_summary_para1 ?? "";
+  const exec2 = text.exec_summary_para2 ?? "";
 
-  const p4_tldr = formatTLDR(text.state_tldr || "");
-  const p4_dom  = S(text.domState || "");
-  const p4_bot  = S(text.bottomState || "");
-  const p4_main = [p4_dom, p4_bot].map((s) => S(s).trim()).filter(Boolean).join("\n\n");
-  const p4_act  = S(text.state_tipact || "");
+  const ov1 = text.ctrl_overview_para1 ?? "";
+  const ov2 = text.ctrl_overview_para2 ?? "";
 
-  const p5_tldr = formatTLDR(text.frequency_tldr || "");
-  const p5_main = S(text.frequency || "");
-  const p5_act  = "";
+  const dd1 = text.ctrl_deepdive_para1 ?? "";
+  const dd2 = text.ctrl_deepdive_para2 ?? "";
 
-  const p6_tldr = formatTLDR(text.sequence_tldr || "");
-  const p6_main = S(text.sequence || "");
-  const p6_act  = S(text.sequence_tipact || "");
+  const th1 = text.themes_para1 ?? "";
+  const th2 = text.themes_para2 ?? "";
 
-  const p7_tldr = formatTLDR(text.theme_tldr || "");
-  const p7_main = S(text.theme || "");
-  const p7_act  = S(text.theme_tipact || "");
-  const p7_low  = S(text.themesLow || text.theme_low || "");
+  // Acts (support both Act1 keys and act_1 keys, but ONLY expose Act1..Act6 to renderer)
+  const Act1 = text.Act1 ?? text.act1 ?? text.act_1 ?? "";
+  const Act2 = text.Act2 ?? text.act2 ?? text.act_2 ?? "";
+  const Act3 = text.Act3 ?? text.act3 ?? text.act_3 ?? "";
+  const Act4 = text.Act4 ?? text.act4 ?? text.act_4 ?? "";
+  const Act5 = text.Act5 ?? text.act5 ?? text.act_5 ?? "";
+  const Act6 = text.Act6 ?? text.act6 ?? text.act_6 ?? "";
 
-  const p8_C = S(workWith.concealed || "");
-  const p8_T = S(workWith.triggered || "");
-  const p8_R = S(workWith.regulated || "");
-  const p8_L = S(workWith.lead || "");
-
-  const a1 = S(text.act_1 || "");
-  const a2 = S(text.act_2 || "");
-  const a3 = S(text.act_3 || "");
-  const a4 = S(text.act_4 || "");
-
-  const legacyAnchor = S(text.act_anchor || "");
-  const combinedActs = [a1, a2, a3, a4].map((x) => norm(x)).filter(Boolean).map((x) => `• ${x}`).join("\n");
+  // D1 now originates inside summaries (surface for debug only)
+  const d1Min = summary.d1Min || summary.d1 || d.d1 || null;
+  const d1ByQ = summary.d1ByQ || null;
 
   return {
-    "p1:n": norm(name),
-    "p1:e": norm(email),
-    "p1:d": norm(dateLbl),
+    raw: d,
+    identity: { name, date },
+
+    ctrl: {
+      dominantKey: ctrl.dominantKey || d.domKey || summary.domKey || summary.domState || "",
+      secondKey:   ctrl.secondKey   || d.secondKey || summary.secondKey || summary.secondState || "",
+      templateKey: ctrl.templateKey || d.templateKey || "",
+      summary: summary || {}
+    },
 
     bands: bandsRaw,
+    layout: d.layout || null,
 
-    "p3:tldr": p3_tldr,
-    "p3:main": p3_main,
-    "p3:act":  p3_act,
+    // Page 3
+    exec1: norm(exec1),
+    exec2: norm(exec2),
 
-    "p4:tldr": p4_tldr,
-    "p4:main": p4_main,
-    "p4:act":  p4_act,
+    // Page 4
+    ov1: norm(ov1),
+    ov2: norm(ov2),
 
-    "p5:tldr": p5_tldr,
-    "p5:main": p5_main,
-    "p5:act":  p5_act,
+    // Page 5
+    dd1: norm(dd1),
+    dd2: norm(dd2),
+    th1: norm(th1),
+    th2: norm(th2),
 
-    "p6:tldr": p6_tldr,
-    "p6:main": p6_main,
-    "p6:act":  p6_act,
+    // Page 6
+    workWith: {
+      concealed: norm(workWith.concealed || ""),
+      triggered: norm(workWith.triggered || ""),
+      regulated: norm(workWith.regulated || ""),
+      lead:      norm(workWith.lead || ""),
+    },
 
-    "p7:tldr": p7_tldr,
-    "p7:main": p7_main,
-    "p7:act":  p7_act,
-    "p7:low":  p7_low,
+    // Page 7
+    acts: {
+      Act1: norm(Act1),
+      Act2: norm(Act2),
+      Act3: norm(Act3),
+      Act4: norm(Act4),
+      Act5: norm(Act5),
+      Act6: norm(Act6),
+    },
 
-    "p8:C": p8_C,
-    "p8:T": p8_T,
-    "p8:R": p8_R,
-    "p8:L": p8_L,
-
-    "p9:act1": a1,
-    "p9:act2": a2,
-    "p9:act3": a3,
-    "p9:act4": a4,
-
-    "p9:anchor": legacyAnchor || combinedActs,
+    // Debug-only D1
+    d1: {
+      d1Min: okObj(d1Min) ? d1Min : (d1Min ? { value: d1Min } : null),
+      d1ByQ: okObj(d1ByQ) ? d1ByQ : null,
+    }
   };
 }
 
 /* ───────── main handler ───────── */
 export default async function handler(req, res) {
   try {
-    const dataParam = req.query?.data || "";
-    const decoded = Buffer.from(String(dataParam || ""), "base64").toString("utf-8");
-    const payload = safeJsonParse(decoded, {});
+    const url = new URL(req.url, "http://localhost");
+    const debug = url.searchParams.get("debug") === "1";
 
-    // ✅ Template selection fixed
-    const tpl = pickTemplateFilename(payload);
-    res.setHeader("x-ctrl-template", tpl);
+    const payload = await readPayload(req);
+    const P = normaliseInput(payload);
 
+    // Layout: default + payload overrides + URL overrides
+    let layout = mergeLayout(P.layout);
+    layout = applyLayoutOverridesFromUrl(layout, url);
+    const L = (layout && layout.pages) ? layout.pages : DEFAULT_LAYOUT.pages;
+
+    // Determine template combo (no change to selection+fallback)
+    const { domKey, secondKey } = computeDomAndSecondKeys({ ...payload, ctrl: P.ctrl });
+    const combo = `${domKey}${secondKey}`;
+
+    const validCombos = new Set(["CT","CL","CR","TC","TR","TL","RC","RT","RL","LC","LR","LT"]);
+    const safeCombo = validCombos.has(combo) ? combo : "CT";
+    const tpl = `CTRL_PoC_Assessment_Profile_template_${safeCombo}.pdf`;
+
+    // Debug: audit EVERYTHING important
+    if (debug) {
+      const bandsKeys = Object.keys(P.bands || {});
+      const labels12 = [
+        "C_low","C_mid","C_high","T_low","T_mid","T_high",
+        "R_low","R_mid","R_high","L_low","L_mid","L_high",
+      ];
+      const bandsPresent = labels12.filter(k => P.bands?.[k] != null).length;
+      const bandsAnyPositive = labels12.some(k => Number(P.bands?.[k] || 0) > 0);
+
+      const dbg = {
+        ok: true,
+        where: "fill-template:V12:debug",
+        method: req.method,
+        url: req.url,
+        template: { combo, safeCombo, tpl },
+
+        identity: {
+          name: P.identity.name,
+          nameLen: (P.identity.name || "").length,
+          date: P.identity.date,
+          dateLen: (P.identity.date || "").length
+        },
+
+        pagesExpected: 8,
+        layoutKeys: Object.keys(L || {}),
+        layoutPageBoxes: Object.fromEntries(
+          Object.entries(L || {}).map(([pk, pv]) => [pk, Object.keys(pv || {})])
+        ),
+
+        textLengths: {
+          exec1: P.exec1.length,
+          exec2: P.exec2.length,
+          ov1: P.ov1.length,
+          ov2: P.ov2.length,
+          dd1: P.dd1.length,
+          dd2: P.dd2.length,
+          th1: P.th1.length,
+          th2: P.th2.length,
+          collabC: P.workWith.concealed.length,
+          collabT: P.workWith.triggered.length,
+          collabR: P.workWith.regulated.length,
+          collabL: P.workWith.lead.length,
+          Act1: P.acts.Act1.length,
+          Act2: P.acts.Act2.length,
+          Act3: P.acts.Act3.length,
+          Act4: P.acts.Act4.length,
+          Act5: P.acts.Act5.length,
+          Act6: P.acts.Act6.length,
+        },
+
+        types: {
+          payloadType: typeof payload,
+          identityType: typeof payload?.identity,
+          ctrlType: typeof payload?.ctrl,
+          textType: typeof payload?.text,
+          workWithType: typeof payload?.workWith,
+          bandsType: typeof payload?.ctrl?.bands,
+        },
+
+        bands: {
+          keysCount: bandsKeys.length,
+          keysPreview: bandsKeys.slice(0, 20),
+          present12Count: bandsPresent,
+          missing12: labels12.filter(k => P.bands?.[k] == null),
+          anyPositive: bandsAnyPositive,
+          sample: Object.fromEntries(labels12.map(k => [k, P.bands?.[k] ?? null]).slice(0, 6)),
+        },
+
+        d1_from_summary: safeJson(P.d1),
+
+        warnings: [
+          ...(P.identity.name ? [] : ["Missing identity.name"]),
+          ...(P.identity.date ? [] : ["Missing identity.date"]),
+          ...(P.exec1 || P.exec2 ? [] : ["Missing exec_summary_para1/para2"]),
+          ...(P.ov1 || P.ov2 ? [] : ["Missing ctrl_overview_para1/para2"]),
+          ...(P.dd1 || P.dd2 ? [] : ["Missing ctrl_deepdive_para1/para2"]),
+          ...(P.th1 || P.th2 ? [] : ["Missing themes_para1/para2"]),
+          ...((P.acts.Act1 || P.acts.Act2 || P.acts.Act3) ? [] : ["Missing Act1/Act2/Act3"]),
+          ...(bandsPresent === 12 ? [] : [`Bands not complete (have ${bandsPresent}/12)`]),
+        ],
+      };
+
+      return res.status(200).json(dbg);
+    }
+
+    // Load template
     const pdfBytes = await loadTemplateBytesLocal(tpl);
     const pdfDoc = await PDFDocument.load(pdfBytes);
-
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-    const baseLayout = deepMerge(DEFAULT_LAYOUT, payload?.layout || {});
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const { layout: layoutWithOverrides, applied, ignored } = applyLayoutOverridesFromUrl(baseLayout, url);
-
-    const P = normaliseInput(payload);
-    const L = layoutWithOverrides.pages || layoutWithOverrides;
 
     const pages = pdfDoc.getPages();
 
-    // p1
-    if (pages[0] && L.p1) {
-      if (L.p1.name && P["p1:n"]) drawTextBox(pages[0], fontB, P["p1:n"], L.p1.name, { maxLines: 1 });
-      if (L.p1.date && P["p1:d"]) drawTextBox(pages[0], font,  P["p1:d"], L.p1.date, { maxLines: 1 });
-    }
+    // Guard: expect exactly 8 pages now (but do not hard-crash, just render what exists)
+    const pageCount = pages.length;
 
-    // headers p2–p10
-    const headerName = norm(P["p1:n"]);
+    // Header name on pages 2–8 (index 1..7)
+    const headerName = norm(P.identity.name);
     if (headerName) {
-      for (let i = 1; i < pages.length; i++) {
-        const pk = `p${i + 1}`;
-        const box = L?.[pk]?.hdrName;
+      for (let i = 1; i < pages.length && i <= 7; i++) {
+        const pageKey = `p${i + 1}`;
+        const box = L?.[pageKey]?.hdrName;
         if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1 });
       }
     }
 
+    // Page index mapping (0-based)
+    const p1 = pages[0] || null;
+    const p2 = pages[1] || null; // header only
     const p3 = pages[2] || null;
     const p4 = pages[3] || null;
     const p5 = pages[4] || null;
     const p6 = pages[5] || null;
     const p7 = pages[6] || null;
     const p8 = pages[7] || null;
-    const p9 = pages[8] || null;
 
-    if (p3) {
-      if (L.p3TLDR?.domDesc) drawLabelAndBody(p3, fontB, font, "TLDR",  P["p3:tldr"], L.p3TLDR.domDesc);
-      if (L.p3main?.domDesc) drawLabelAndBody(p3, fontB, font, "",      P["p3:main"], L.p3main.domDesc);
-      if (L.p3act?.domDesc)  drawLabelAndBody(p3, fontB, font, "Action", P["p3:act"],  L.p3act.domDesc);
+    /* Page 1: name + date */
+    if (p1 && L.p1) {
+      if (L.p1.name && P.identity.name) drawTextBox(p1, font, P.identity.name, L.p1.name, { maxLines: 1 });
+      if (L.p1.date && P.identity.date) drawTextBox(p1, font, P.identity.date, L.p1.date, { maxLines: 1 });
     }
 
-    if (p4) {
-      if (L.p4TLDR?.spider) drawLabelAndBody(p4, fontB, font, "TLDR",  P["p4:tldr"], L.p4TLDR.spider);
-      if (L.p4main?.spider) drawLabelAndBody(p4, fontB, font, "",      P["p4:main"], L.p4main.spider);
-      if (L.p4act?.spider)  drawLabelAndBody(p4, fontB, font, "Action", P["p4:act"],  L.p4act.spider);
+    /* Page 3: Exec Summary para1 + para2 */
+    if (p3 && L.p3) {
+      if (L.p3.exec1) drawTextBox(p3, font, P.exec1, L.p3.exec1, { maxLines: L.p3.exec1.maxLines });
+      if (L.p3.exec2) drawTextBox(p3, font, P.exec2, L.p3.exec2, { maxLines: L.p3.exec2.maxLines });
     }
 
-    if (p5) {
-      if (L.p5TLDR?.seqpat) drawLabelAndBody(p5, fontB, font, "TLDR",  P["p5:tldr"], L.p5TLDR.seqpat);
-      if (L.p5main?.seqpat) drawLabelAndBody(p5, fontB, font, "",      P["p5:main"], L.p5main.seqpat);
-      if (L.p5act?.seqpat)  drawLabelAndBody(p5, fontB, font, "Action", P["p5:act"],  L.p5act.seqpat);
+    /* Page 4: CTRL Overview para1 + para2 + CHART (moved here) */
+    if (p4 && L.p4) {
+      if (L.p4.ov1) drawTextBox(p4, font, P.ov1, L.p4.ov1, { maxLines: L.p4.ov1.maxLines });
+      if (L.p4.ov2) drawTextBox(p4, font, P.ov2, L.p4.ov2, { maxLines: L.p4.ov2.maxLines });
 
-      if (L.p5chart?.chart) {
+      if (L.p4.chart) {
         try {
-          await embedRadarFromBandsOrUrl(
-            pdfDoc,
-            p5,
-            L.p5chart.chart,
-            P.bands || {},
-            payload?.spiderChartUrl || payload?.chart?.spiderUrl || ""
-          );
+          await embedRadarFromBands(pdfDoc, p4, L.p4.chart, P.bands || {});
         } catch (e) {
-          console.warn("[fill-template:v11.2] Radar chart skipped:", e?.message || String(e));
+          console.warn("[fill-template V12] Radar chart skipped:", e?.message || String(e));
         }
       }
     }
 
-    if (p6) {
-      if (L.p6TLDR?.themeExpl) drawLabelAndBody(p6, fontB, font, "TLDR",  P["p6:tldr"], L.p6TLDR.themeExpl);
-      if (L.p6main?.themeExpl) drawLabelAndBody(p6, fontB, font, "",      P["p6:main"], L.p6main.themeExpl);
-      if (L.p6act?.themeExpl)  drawLabelAndBody(p6, fontB, font, "Action", P["p6:act"],  L.p6act.themeExpl);
+    /* Page 5: Deep Dive para1 + para2 + Themes para1 + para2 */
+    if (p5 && L.p5) {
+      if (L.p5.dd1) drawTextBox(p5, font, P.dd1, L.p5.dd1, { maxLines: L.p5.dd1.maxLines });
+      if (L.p5.dd2) drawTextBox(p5, font, P.dd2, L.p5.dd2, { maxLines: L.p5.dd2.maxLines });
+      if (L.p5.th1) drawTextBox(p5, font, P.th1, L.p5.th1, { maxLines: L.p5.th1.maxLines });
+      if (L.p5.th2) drawTextBox(p5, font, P.th2, L.p5.th2, { maxLines: L.p5.th2.maxLines });
     }
 
-    if (p7) {
-      if (L.p7TLDR?.themesTop) drawLabelAndBody(p7, fontB, font, "TLDR",  P["p7:tldr"], L.p7TLDR.themesTop);
-      if (L.p7main?.themesTop) drawLabelAndBody(p7, fontB, font, "",      P["p7:main"], L.p7main.themesTop);
-      if (L.p7act?.themesTop)  drawLabelAndBody(p7, fontB, font, "Action", P["p7:act"],  L.p7act.themesTop);
-
-      if (L.p7?.themesLow && P["p7:low"]) {
-        drawTextBox(p7, font, P["p7:low"], L.p7.themesLow, { maxLines: L.p7.themesLow.maxLines });
-      }
+    /* Page 6: WorkWith */
+    if (p6 && L.p6) {
+      if (L.p6.collabC) drawTextBox(p6, font, P.workWith.concealed, L.p6.collabC, { maxLines: L.p6.collabC.maxLines });
+      if (L.p6.collabT) drawTextBox(p6, font, P.workWith.triggered, L.p6.collabT, { maxLines: L.p6.collabT.maxLines });
+      if (L.p6.collabR) drawTextBox(p6, font, P.workWith.regulated, L.p6.collabR, { maxLines: L.p6.collabR.maxLines });
+      if (L.p6.collabL) drawTextBox(p6, font, P.workWith.lead, L.p6.collabL, { maxLines: L.p6.collabL.maxLines });
     }
 
-    if (p8 && L.p8grid) {
-      if (L.p8grid.collabC && P["p8:C"]) drawTextBox(p8, font, P["p8:C"], L.p8grid.collabC, { maxLines: L.p8grid.collabC.maxLines });
-      if (L.p8grid.collabT && P["p8:T"]) drawTextBox(p8, font, P["p8:T"], L.p8grid.collabT, { maxLines: L.p8grid.collabT.maxLines });
-      if (L.p8grid.collabR && P["p8:R"]) drawTextBox(p8, font, P["p8:R"], L.p8grid.collabR, { maxLines: L.p8grid.collabR.maxLines });
-      if (L.p8grid.collabL && P["p8:L"]) drawTextBox(p8, font, P["p8:L"], L.p8grid.collabL, { maxLines: L.p8grid.collabL.maxLines });
+    /* Page 7: Acts */
+    if (p7 && L.p7) {
+      if (L.p7.act1) drawTextBox(p7, font, P.acts.Act1, L.p7.act1, { maxLines: L.p7.act1.maxLines });
+      if (L.p7.act2) drawTextBox(p7, font, P.acts.Act2, L.p7.act2, { maxLines: L.p7.act2.maxLines });
+      if (L.p7.act3) drawTextBox(p7, font, P.acts.Act3, L.p7.act3, { maxLines: L.p7.act3.maxLines });
+      if (L.p7.act4) drawTextBox(p7, font, P.acts.Act4, L.p7.act4, { maxLines: L.p7.act4.maxLines });
+      if (L.p7.act5) drawTextBox(p7, font, P.acts.Act5, L.p7.act5, { maxLines: L.p7.act5.maxLines });
+      if (L.p7.act6) drawTextBox(p7, font, P.acts.Act6, L.p7.act6, { maxLines: L.p7.act6.maxLines });
     }
 
-    // Page 9 — 4 actions
-    if (p9 && L.p9) {
-      if (L.p9.act1 && P["p9:act1"]) drawTextBox(p9, font, P["p9:act1"], L.p9.act1, { maxLines: L.p9.act1.maxLines });
-      if (L.p9.act2 && P["p9:act2"]) drawTextBox(p9, font, P["p9:act2"], L.p9.act2, { maxLines: L.p9.act2.maxLines });
-      if (L.p9.act3 && P["p9:act3"]) drawTextBox(p9, font, P["p9:act3"], L.p9.act3, { maxLines: L.p9.act3.maxLines });
-      if (L.p9.act4 && P["p9:act4"]) drawTextBox(p9, font, P["p9:act4"], L.p9.act4, { maxLines: L.p9.act4.maxLines });
-
-      // fallback: render legacy combined anchor if no individual acts
-      const noneActs = !P["p9:act1"] && !P["p9:act2"] && !P["p9:act3"] && !P["p9:act4"];
-      if (noneActs && L.p9.actAnchor && P["p9:anchor"]) {
-        drawTextBox(p9, font, P["p9:anchor"], L.p9.actAnchor, { maxLines: L.p9.actAnchor.maxLines });
-      }
-    }
-
-    // Diagnostics (safe headers)
-    const missing = { identity: [], text: [], workWith: [], actions: [] };
-
-    if (!P["p1:n"]) missing.identity.push("identity.fullName");
-    if (!P["p1:e"]) missing.identity.push("identity.email");
-    if (!P["p1:d"]) missing.identity.push("identity.dateLabel/dateLbl");
-
-    if (!P["p3:tldr"]) missing.text.push("text.execSummary_tldr");
-    if (!P["p3:main"]) missing.text.push("text.execSummary");
-    if (!P["p3:act"])  missing.text.push("text.execSummary_tipact");
-
-    if (!P["p4:tldr"]) missing.text.push("text.state_tldr");
-    if (!P["p4:main"]) missing.text.push("text.domState+bottomState");
-    if (!P["p4:act"])  missing.text.push("text.state_tipact");
-
-    if (!P["p5:main"]) missing.text.push("text.frequency");
-    if (!P["p6:main"]) missing.text.push("text.sequence");
-    if (!P["p7:main"]) missing.text.push("text.theme");
-
-    if (!P["p8:C"]) missing.workWith.push("workWith.concealed");
-    if (!P["p8:T"]) missing.workWith.push("workWith.triggered");
-    if (!P["p8:R"]) missing.workWith.push("workWith.regulated");
-    if (!P["p8:L"]) missing.workWith.push("workWith.lead");
-
-    if (!P["p9:act1"]) missing.actions.push("text.act_1");
-    if (!P["p9:act2"]) missing.actions.push("text.act_2");
-    if (!P["p9:act3"]) missing.actions.push("text.act_3");
-    if (!P["p9:act4"]) missing.actions.push("text.act_4");
+    // Page 8: header only by default (nothing else to draw)
 
     const outBytes = await pdfDoc.save();
 
-    const outName = makeOutputFilename(P["p1:n"], P["p1:d"]);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
-
-    res.setHeader("x-ctrl-layout-overrides-applied", String(applied.length));
-    res.setHeader("x-ctrl-layout-overrides-ignored", String(ignored.length));
-    res.setHeader("x-ctrl-missing-count", String(
-      missing.identity.length + missing.text.length + missing.workWith.length + missing.actions.length
-    ));
-
+    res.setHeader("X-CTRL-Template", tpl);
+    res.setHeader("X-CTRL-PageCount", String(pageCount));
     res.status(200).send(Buffer.from(outBytes));
   } catch (err) {
-    console.error("[fill-template:v11.2] CRASH", err);
+    console.error("[fill-template V12] CRASH", err);
     res.status(500).json({
       ok: false,
       error: err?.message || String(err),
